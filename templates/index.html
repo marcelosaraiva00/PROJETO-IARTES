@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IARTES - Sistema de Recomendação de Testes Motorola</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="container">
+            <div class="header-content">
+                <div class="logo">
+                    <span class="logo-icon">🤖</span>
+                    <span class="logo-text">IARTES</span>
+                </div>
+                <div class="subtitle">Sistema Inteligente de Recomendação de Testes</div>
+            </div>
+            <div class="header-stats" id="headerStats">
+                <div class="stat-item">
+                    <span class="stat-label">Testes</span>
+                    <span class="stat-value" id="totalTests">-</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Feedbacks</span>
+                    <span class="stat-value" id="totalFeedbacks">-</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Confiança</span>
+                    <span class="stat-value" id="confidence">-</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Status IA</span>
+                    <span class="stat-badge" id="aiStatus">-</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <div class="container">
+            <!-- Tabs -->
+            <div class="tabs">
+                <button class="tab-button active" data-tab="recomendacao">
+                    📋 Recomendação
+                </button>
+                <button class="tab-button" data-tab="feedback">
+                    ⭐ Dar Feedback
+                </button>
+                <button class="tab-button" data-tab="estatisticas">
+                    📊 Estatísticas
+                </button>
+                <button class="tab-button" data-tab="testes">
+                    📱 Todos os Testes
+                </button>
+            </div>
+
+            <!-- Tab: Recomendação -->
+            <div class="tab-content active" id="tab-recomendacao">
+                <!-- Etapa 1: Seleção de Testes -->
+                <div id="step1-selection" class="recommendation-step">
+                    <div class="section-header">
+                        <h2>📝 Etapa 1: Selecione os Testes que Deseja Executar</h2>
+                        <button class="btn btn-primary" onclick="solicitarRecomendacao()" id="btnSolicitar">
+                            🤖 Solicitar Recomendação de Ordem
+                        </button>
+                    </div>
+
+                    <div class="filter-bar">
+                        <input type="text" id="searchTestsSelect" placeholder="🔍 Buscar testes..." class="search-input">
+                        <select id="filterModuleSelect" class="filter-select">
+                            <option value="">Todos os Módulos</option>
+                        </select>
+                        <button class="btn btn-secondary" onclick="selecionarTodos()">✅ Selecionar Todos</button>
+                        <button class="btn btn-secondary" onclick="limparSelecao()">❌ Limpar Seleção</button>
+                    </div>
+
+                    <div class="test-selection-grid" id="testSelectionGrid">
+                        <div class="loading">Carregando testes...</div>
+                    </div>
+
+                    <div class="selection-summary" id="selectionSummary" style="display:none;">
+                        <strong>Selecionados:</strong> <span id="selectedCount">0</span> testes
+                        (<span id="selectedTime">0</span> min estimado)
+                    </div>
+                </div>
+
+                <!-- Etapa 2: Visualizar e Modificar Recomendação -->
+                <div id="step2-recommendation" class="recommendation-step" style="display:none;">
+                    <div class="section-header">
+                        <h2>🎯 Etapa 2: Ordem Recomendada pela IA</h2>
+                        <div class="btn-group">
+                            <button class="btn btn-success" onclick="aceitarOrdem()">
+                                ✅ Aceitar e Iniciar Execução
+                            </button>
+                            <button class="btn btn-secondary" onclick="voltarSelecao()">
+                                ← Voltar
+                            </button>
+                            <button class="btn btn-secondary" onclick="novaRecomendacao()">
+                                🔄 Nova Recomendação
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="recommendation-info" id="recommendationInfo">
+                        <div class="info-card">
+                            <div class="info-label">Método</div>
+                            <div class="info-value" id="recMethod">-</div>
+                        </div>
+                        <div class="info-card">
+                            <div class="info-label">Confiança</div>
+                            <div class="info-value" id="recConfidence">-</div>
+                        </div>
+                        <div class="info-card">
+                            <div class="info-label">Tempo Total</div>
+                            <div class="info-value" id="recTime">-</div>
+                        </div>
+                        <div class="info-card">
+                            <div class="info-label">Resets Estimados</div>
+                            <div class="info-value" id="recResets">-</div>
+                        </div>
+                    </div>
+
+                    <div class="info-banner">
+                        💡 <strong>Dica:</strong> Você pode arrastar os testes para reordenar manualmente. A IA aprende com suas modificações!
+                    </div>
+
+                    <div class="test-list" id="recommendedOrder">
+                        <div class="loading">Gerando recomendação...</div>
+                    </div>
+                </div>
+
+                <!-- Etapa 3: Execução Manual (instruções) -->
+                <div id="step3-execution" class="recommendation-step" style="display:none;">
+                    <div class="section-header">
+                        <h2>🚀 Etapa 3: Execute os Testes Manualmente</h2>
+                    </div>
+
+                    <div class="execution-instructions">
+                        <div class="instruction-card">
+                            <h3>📱 Instruções de Execução</h3>
+                            <ol>
+                                <li>Execute cada teste na ordem recomendada abaixo</li>
+                                <li>Anote o tempo real de execução de cada teste</li>
+                                <li>Registre se o teste passou ou falhou</li>
+                                <li>Após cada teste, vá para a aba "⭐ Dar Feedback"</li>
+                            </ol>
+                        </div>
+
+                        <div class="test-list" id="executionOrder">
+                            <!-- Preenchido via JS -->
+                        </div>
+                    </div>
+
+                    <div class="section-actions">
+                        <button class="btn btn-primary" onclick="irParaFeedback()">
+                            ⭐ Ir para Dar Feedback
+                        </button>
+                        <button class="btn btn-secondary" onclick="voltarSelecao()">
+                            🔄 Nova Recomendação
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Feedback -->
+            <div class="tab-content" id="tab-feedback">
+                <div class="section-header">
+                    <h2>⭐ Registrar Feedback de Execução</h2>
+                    <p class="subtitle">Ajude a IA a aprender com suas execuções</p>
+                </div>
+
+                <div class="feedback-form-container">
+                    <form id="feedbackForm" class="feedback-form">
+                        <div class="form-group">
+                            <label for="testSelect">Teste Executado</label>
+                            <select id="testSelect" required>
+                                <option value="">Selecione um teste...</option>
+                            </select>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="actualTime">Tempo Real (segundos)</label>
+                                <input type="number" id="actualTime" step="0.1" required>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="testSuccess">Teste Passou?</label>
+                                <select id="testSuccess" required>
+                                    <option value="true">✅ Sim</option>
+                                    <option value="false">❌ Não</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="followedRecommendation">Seguiu a Ordem Recomendada?</label>
+                                <select id="followedRecommendation" required>
+                                    <option value="true">✅ Sim, segui a ordem</option>
+                                    <option value="false">❌ Não, mudei a ordem</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="requiredReset">Precisou Reiniciar?</label>
+                                <select id="requiredReset">
+                                    <option value="false">Não</option>
+                                    <option value="true">Sim</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="rating">Avaliação da Recomendação (1-5 estrelas)</label>
+                            <div class="rating-input" id="ratingInput">
+                                <span class="star" data-value="1">☆</span>
+                                <span class="star" data-value="2">☆</span>
+                                <span class="star" data-value="3">☆</span>
+                                <span class="star" data-value="4">☆</span>
+                                <span class="star" data-value="5">☆</span>
+                            </div>
+                            <input type="hidden" id="rating" value="5" required>
+                            <small style="color:#64748b;display:block;margin-top:8px;">
+                                Avalie a qualidade da ordem sugerida pela IA
+                            </small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="notes">Observações (opcional)</label>
+                            <textarea id="notes" rows="3" placeholder="Comentários sobre a execução..."></textarea>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary btn-large">
+                            ✅ Registrar Feedback
+                        </button>
+                    </form>
+
+                    <div class="feedback-success" id="feedbackSuccess" style="display: none;">
+                        <div class="success-icon">✅</div>
+                        <h3>Feedback Registrado!</h3>
+                        <p>O modelo foi atualizado com sucesso</p>
+                        <button class="btn btn-secondary" onclick="resetFeedbackForm()">
+                            Adicionar Outro Feedback
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Estatísticas -->
+            <div class="tab-content" id="tab-estatisticas">
+                <div class="section-header">
+                    <h2>📊 Estatísticas e Análises</h2>
+                </div>
+
+                <div class="stats-grid" id="statsGrid">
+                    <div class="stat-card">
+                        <div class="stat-card-icon">📝</div>
+                        <div class="stat-card-value" id="statTotalFeedbacks">0</div>
+                        <div class="stat-card-label">Total de Feedbacks</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-card-icon">✅</div>
+                        <div class="stat-card-value" id="statSuccessRate">0%</div>
+                        <div class="stat-card-label">Taxa de Sucesso</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-card-icon">⭐</div>
+                        <div class="stat-card-value" id="statAvgRating">0.0</div>
+                        <div class="stat-card-label">Avaliação Média</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-card-icon">🔄</div>
+                        <div class="stat-card-value" id="statResets">0</div>
+                        <div class="stat-card-label">Resets Necessários</div>
+                    </div>
+                </div>
+
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <h3>📈 Evolução das Avaliações</h3>
+                        <canvas id="ratingChart"></canvas>
+                    </div>
+
+                    <div class="chart-card">
+                        <h3>📦 Testes por Módulo</h3>
+                        <canvas id="moduleChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="ai-status-card" id="aiStatusCard">
+                    <h3>🤖 Status do Modelo de IA</h3>
+                    <div class="ai-progress" id="aiProgress">
+                        <!-- Preenchido via JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Todos os Testes -->
+            <div class="tab-content" id="tab-testes">
+                <div class="section-header">
+                    <h2>📱 Todos os Testes Disponíveis</h2>
+                </div>
+
+                <div class="filter-bar">
+                    <input type="text" id="searchTests" placeholder="🔍 Buscar testes..." class="search-input">
+                    <select id="filterModule" class="filter-select">
+                        <option value="">Todos os Módulos</option>
+                    </select>
+                    <select id="filterPriority" class="filter-select">
+                        <option value="">Todas as Prioridades</option>
+                        <option value="5">Prioridade 5 (Crítico)</option>
+                        <option value="4">Prioridade 4 (Alto)</option>
+                        <option value="3">Prioridade 3 (Médio)</option>
+                        <option value="2">Prioridade 2 (Baixo)</option>
+                    </select>
+                </div>
+
+                <div class="test-grid" id="allTests">
+                    <div class="loading">Carregando testes...</div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <p>IARTES - Sistema Inteligente de Recomendação de Testes | Powered by Machine Learning (Random Forest)</p>
+        </div>
+    </footer>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toast"></div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
