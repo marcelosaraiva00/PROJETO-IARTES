@@ -19,22 +19,71 @@
                 </div>
                 <div class="subtitle">Sistema Inteligente de Recomendação de Testes</div>
             </div>
-            <div class="header-stats" id="headerStats">
-                <div class="stat-item">
-                    <span class="stat-label">Testes</span>
-                    <span class="stat-value" id="totalTests">-</span>
+            <div style="display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 16px;">
+                <div class="header-stats" id="headerStats">
+                    <div class="stat-item">
+                        <span class="stat-label">Testes</span>
+                        <span class="stat-value" id="totalTests">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Feedbacks</span>
+                        <span class="stat-value" id="totalFeedbacks">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Confiança</span>
+                        <span class="stat-value" id="confidence">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Status IA</span>
+                        <span class="stat-badge" id="aiStatus">-</span>
+                    </div>
                 </div>
-                <div class="stat-item">
-                    <span class="stat-label">Feedbacks</span>
-                    <span class="stat-value" id="totalFeedbacks">-</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Confiança</span>
-                    <span class="stat-value" id="confidence">-</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Status IA</span>
-                    <span class="stat-badge" id="aiStatus">-</span>
+                <div class="user-info" id="userInfo" style="display: none;">
+                    <!-- Notificações -->
+                    <div class="notifications-container">
+                        <button class="notification-btn" onclick="toggleNotifications()" id="notificationBtn">
+                            🔔
+                            <span class="notification-badge" id="notificationBadge" style="display: none;">0</span>
+                        </button>
+                        <div class="notifications-dropdown" id="notificationsDropdown" style="display: none;">
+                            <div class="notifications-header">
+                                <h3>Notificações</h3>
+                                <button class="btn-link" onclick="markAllNotificationsRead()">Marcar todas como lidas</button>
+                            </div>
+                            <div class="notifications-list" id="notificationsList">
+                                <div class="notification-loading">Carregando...</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Menu do Usuário -->
+                    <div class="user-menu-container">
+                        <button class="user-menu-btn" onclick="toggleUserMenu()" id="userMenuBtn">
+                            <img id="headerProfilePicture" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%23e2e8f0'/%3E%3Ctext x='16' y='20' font-size='18' text-anchor='middle' fill='%2364748b'%3E👤%3C/text%3E%3C/svg%3E" alt="Perfil" class="header-profile-picture">
+                            <span class="user-name" id="userName">-</span>
+                            <span class="menu-arrow">▼</span>
+                        </button>
+                        <div class="user-menu-dropdown" id="userMenuDropdown" style="display: none;">
+                            <div class="user-menu-header">
+                                <img id="menuProfilePicture" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48'%3E%3Ccircle cx='24' cy='24' r='24' fill='%23e2e8f0'/%3E%3Ctext x='24' y='30' font-size='28' text-anchor='middle' fill='%2364748b'%3E👤%3C/text%3E%3C/svg%3E" alt="Perfil" class="menu-profile-picture">
+                                <div class="user-menu-info">
+                                    <div class="user-menu-name" id="menuUserName">-</div>
+                                    <div class="user-menu-email" id="menuUserEmail">-</div>
+                                </div>
+                            </div>
+                            <div class="user-menu-divider"></div>
+                            <a href="#" class="user-menu-item" onclick="openProfileModal(); return false;">
+                                👤 Meu Perfil
+                            </a>
+                            <a href="#" class="user-menu-item" onclick="openPreferencesModal(); return false;">
+                                ⚙️ Preferências
+                            </a>
+                            <div class="user-menu-divider"></div>
+                            <a href="#" class="user-menu-item" onclick="logout(); return false;">
+                                🚪 Sair
+                            </a>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -51,11 +100,17 @@
                 <button class="tab-button" data-tab="feedback">
                     ⭐ Dar Feedback
                 </button>
+                <button class="tab-button" data-tab="pessoais">
+                    👤 Minhas Estatísticas
+                </button>
                 <button class="tab-button" data-tab="estatisticas">
-                    📊 Estatísticas
+                    📊 Estatísticas Gerais
                 </button>
                 <button class="tab-button" data-tab="testes">
                     📱 Todos os Testes
+                </button>
+                <button class="tab-button" data-tab="anotacoes">
+                    📝 Anotações
                 </button>
             </div>
 
@@ -127,6 +182,19 @@
 
                     <div class="info-banner">
                         💡 <strong>Dica:</strong> Você pode arrastar os testes para reordenar manualmente. A IA aprende com suas modificações!
+                    </div>
+
+                    <!-- Explicação da IA (NOVO) -->
+                    <div id="aiExplanation" class="explanation-card" style="display: none;">
+                        <div class="explanation-header">
+                            <h3>🤖 Por que esta ordem foi recomendada?</h3>
+                            <button class="btn-icon" onclick="toggleExplanation()" id="toggleExplanationBtn">
+                                ▼
+                            </button>
+                        </div>
+                        <div id="explanationContent" class="explanation-content">
+                            <!-- Preenchido via JS -->
+                        </div>
                     </div>
 
                     <div class="test-list" id="recommendedOrder">
@@ -252,6 +320,158 @@
                 </div>
             </div>
 
+            <!-- Tab: Estatísticas Pessoais -->
+            <div class="tab-content" id="tab-pessoais">
+                <div class="section-header">
+                    <h2>👤 Minhas Estatísticas Pessoais</h2>
+                    <p style="color: var(--text-secondary); margin-top: 8px;">
+                        Acompanhe seu progresso e o aprendizado do seu modelo personalizado
+                    </p>
+                </div>
+
+                <!-- Cards de Estatísticas Pessoais -->
+                <div class="stats-grid" id="personalStatsGrid">
+                    <div class="stat-card">
+                        <div class="stat-card-icon">📝</div>
+                        <div class="stat-card-value" id="personalTotalFeedbacks">0</div>
+                        <div class="stat-card-label">Meus Feedbacks</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-card-icon">⭐</div>
+                        <div class="stat-card-value" id="personalAvgRating">0.0</div>
+                        <div class="stat-card-label">Minha Avaliação Média</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-card-icon">✅</div>
+                        <div class="stat-card-value" id="personalSuccessRate">0%</div>
+                        <div class="stat-card-label">Minha Taxa de Sucesso</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-card-icon">⏱️</div>
+                        <div class="stat-card-value" id="personalAvgTime">0s</div>
+                        <div class="stat-card-label">Tempo Médio de Execução</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-card-icon">🤖</div>
+                        <div class="stat-card-value" id="personalModelSamples">0</div>
+                        <div class="stat-card-label">Amostras do Meu Modelo</div>
+                    </div>
+
+                    <div class="stat-card">
+                        <div class="stat-card-icon">🎯</div>
+                        <div class="stat-card-value" id="personalWeight">-</div>
+                        <div class="stat-card-label">Peso de Personalização</div>
+                    </div>
+                </div>
+
+                <!-- Comparação com Médias Globais -->
+                <div class="comparison-section">
+                    <h3>📊 Comparação com Médias Globais</h3>
+                    <div class="comparison-grid">
+                        <div class="comparison-card">
+                            <div class="comparison-label">Avaliação Média</div>
+                            <div class="comparison-bars">
+                                <div class="comparison-bar">
+                                    <div class="bar-label">Você</div>
+                                    <div class="bar-container">
+                                        <div class="bar-fill personal" id="personalRatingBar" style="width: 0%"></div>
+                                        <span class="bar-value" id="personalRatingValue">0.0</span>
+                                    </div>
+                                </div>
+                                <div class="comparison-bar">
+                                    <div class="bar-label">Global</div>
+                                    <div class="bar-container">
+                                        <div class="bar-fill global" id="globalRatingBar" style="width: 0%"></div>
+                                        <span class="bar-value" id="globalRatingValue">0.0</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="comparison-card">
+                            <div class="comparison-label">Taxa de Sucesso</div>
+                            <div class="comparison-bars">
+                                <div class="comparison-bar">
+                                    <div class="bar-label">Você</div>
+                                    <div class="bar-container">
+                                        <div class="bar-fill personal" id="personalSuccessBar" style="width: 0%"></div>
+                                        <span class="bar-value" id="personalSuccessValue">0%</span>
+                                    </div>
+                                </div>
+                                <div class="comparison-bar">
+                                    <div class="bar-label">Global</div>
+                                    <div class="bar-container">
+                                        <div class="bar-fill global" id="globalSuccessBar" style="width: 0%"></div>
+                                        <span class="bar-value" id="globalSuccessValue">0%</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Gráficos Pessoais -->
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <h3>📈 Minha Evolução de Avaliações</h3>
+                        <canvas id="personalRatingChart"></canvas>
+                    </div>
+
+                    <div class="chart-card">
+                        <h3>📦 Meus Módulos Preferidos</h3>
+                        <canvas id="personalModulesChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Status do Modelo Personalizado -->
+                <div class="ai-status-card" id="personalAIStatusCard">
+                    <h3>🤖 Status do Meu Modelo Personalizado</h3>
+                    <div class="ai-progress" id="personalAIProgress">
+                        <!-- Preenchido via JS -->
+                    </div>
+                </div>
+
+                <!-- Histórico Recente -->
+                <div class="recent-history-section">
+                    <h3>📋 Meu Histórico Recente de Feedbacks</h3>
+                    <div id="personalFeedbackHistory" class="feedback-history-list">
+                        <!-- Preenchido via JS -->
+                    </div>
+                </div>
+
+                <!-- Detecção de Anomalias (NOVO) -->
+                <div class="anomalies-section">
+                    <h3>🔍 Detecção de Anomalias</h3>
+                    <p style="color: var(--text-secondary); margin-bottom: 16px;">
+                        O sistema analisa seus feedbacks para identificar padrões anômalos e problemas potenciais.
+                    </p>
+                    <button class="btn btn-secondary" onclick="loadAnomalies()">
+                        🔍 Analisar Meus Feedbacks
+                    </button>
+                    <div id="anomaliesResults" style="display: none; margin-top: 24px;">
+                        <!-- Preenchido via JS -->
+                    </div>
+                </div>
+
+                <!-- Importância de Features (NOVO) -->
+                <div class="feature-importance-section">
+                    <h3>📊 Importância das Features do Modelo</h3>
+                    <p style="color: var(--text-secondary); margin-bottom: 16px;">
+                        Veja quais fatores o modelo considera mais importantes para fazer recomendações.
+                    </p>
+                    <button class="btn btn-secondary" onclick="loadFeatureImportance()">
+                        📈 Ver Importância das Features
+                    </button>
+                    <div id="featureImportanceChart" style="margin-top: 24px;">
+                        <!-- Preenchido via JS -->
+                    </div>
+                </div>
+            </div>
+
             <!-- Tab: Estatísticas -->
             <div class="tab-content" id="tab-estatisticas">
                 <div class="section-header">
@@ -308,24 +528,364 @@
             <div class="tab-content" id="tab-testes">
                 <div class="section-header">
                     <h2>📱 Todos os Testes Disponíveis</h2>
+                    <div class="header-actions">
+                        <button class="btn btn-primary" onclick="openCreateTestModal()">
+                            ➕ Criar Teste Personalizado
+                        </button>
+                        <button class="btn btn-secondary" onclick="toggleAdvancedFilters()" id="toggleFiltersBtn">
+                            🔧 Filtros Avançados
+                        </button>
+                        <button class="btn btn-secondary" onclick="clearAllFilters()">
+                            🗑️ Limpar Filtros
+                        </button>
+                    </div>
                 </div>
 
+                <!-- Barra de busca rápida -->
                 <div class="filter-bar">
-                    <input type="text" id="searchTests" placeholder="🔍 Buscar testes..." class="search-input">
-                    <select id="filterModule" class="filter-select">
-                        <option value="">Todos os Módulos</option>
+                    <input type="text" id="searchTests" placeholder="🔍 Buscar por ID, nome, descrição ou módulo..." 
+                           class="search-input" oninput="applyFilters()">
+                    <select id="sortBy" class="filter-select" onchange="applyFilters()">
+                        <option value="id">Ordenar por: ID</option>
+                        <option value="name">Ordenar por: Nome</option>
+                        <option value="module">Ordenar por: Módulo</option>
+                        <option value="priority">Ordenar por: Prioridade</option>
+                        <option value="estimated_time">Ordenar por: Tempo</option>
                     </select>
-                    <select id="filterPriority" class="filter-select">
-                        <option value="">Todas as Prioridades</option>
-                        <option value="5">Prioridade 5 (Crítico)</option>
-                        <option value="4">Prioridade 4 (Alto)</option>
-                        <option value="3">Prioridade 3 (Médio)</option>
-                        <option value="2">Prioridade 2 (Baixo)</option>
+                    <select id="sortOrder" class="filter-select" onchange="applyFilters()">
+                        <option value="asc">Crescente</option>
+                        <option value="desc">Decrescente</option>
                     </select>
+                </div>
+
+                <!-- Filtros avançados (colapsável) -->
+                <div class="advanced-filters" id="advancedFilters" style="display: none;">
+                    <div class="filters-grid">
+                        <div class="filter-group">
+                            <label>Módulo</label>
+                            <select id="filterModule" class="filter-select" multiple onchange="applyFilters()">
+                                <!-- Preenchido via JS -->
+                            </select>
+                        </div>
+                        
+                        <div class="filter-group">
+                            <label>Prioridade</label>
+                            <div class="range-inputs">
+                                <input type="number" id="priorityMin" placeholder="Mín" min="1" max="5" 
+                                       class="filter-input" onchange="applyFilters()">
+                                <span>até</span>
+                                <input type="number" id="priorityMax" placeholder="Máx" min="1" max="5" 
+                                       class="filter-input" onchange="applyFilters()">
+                            </div>
+                        </div>
+                        
+                        <div class="filter-group">
+                            <label>Nível de Impacto</label>
+                            <div class="checkbox-group">
+                                <label><input type="checkbox" value="destructive" id="filterImpactDestructive" 
+                                             onchange="applyFilters()"> 🔴 Destrutivo</label>
+                                <label><input type="checkbox" value="partially_destructive" id="filterImpactPartial" 
+                                             onchange="applyFilters()"> 🟡 Parcialmente Destrutivo</label>
+                                <label><input type="checkbox" value="non_destructive" id="filterImpactNon" 
+                                             onchange="applyFilters()"> 🟢 Não-Destrutivo</label>
+                            </div>
+                        </div>
+                        
+                        <div class="filter-group">
+                            <label>Tempo Estimado (segundos)</label>
+                            <div class="range-inputs">
+                                <input type="number" id="timeMin" placeholder="Mín" min="0" step="0.1" 
+                                       class="filter-input" onchange="applyFilters()">
+                                <span>até</span>
+                                <input type="number" id="timeMax" placeholder="Máx" min="0" step="0.1" 
+                                       class="filter-input" onchange="applyFilters()">
+                            </div>
+                        </div>
+                        
+                        <div class="filter-group">
+                            <label>Tags</label>
+                            <select id="filterTags" class="filter-select" multiple onchange="applyFilters()">
+                                <!-- Preenchido via JS -->
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Contador de resultados -->
+                <div class="results-info" id="resultsInfo" style="display: none;">
+                    <span id="resultsCount">0</span> teste(s) encontrado(s)
                 </div>
 
                 <div class="test-grid" id="allTests">
                     <div class="loading">Carregando testes...</div>
+                </div>
+            </div>
+
+            <!-- Tab: Anotações -->
+            <div class="tab-content" id="tab-anotacoes">
+                <div class="section-header">
+                    <h2>📝 Anotações - Quadro Kanban</h2>
+                    <button class="btn btn-primary" onclick="openNewNoteModal()">
+                        ➕ Nova Anotação
+                    </button>
+                </div>
+
+                <div class="kanban-board" id="kanbanBoard">
+                    <div class="kanban-column" data-column="todo">
+                        <div class="kanban-column-header">
+                            <h3>📋 A Fazer</h3>
+                            <span class="note-count" id="count-todo">0</span>
+                        </div>
+                        <div class="kanban-column-content" id="column-todo" ondrop="handleNoteDrop(event)" ondragover="allowNoteDrop(event)">
+                            <!-- Post-its serão inseridos aqui -->
+                        </div>
+                    </div>
+
+                    <div class="kanban-column" data-column="doing">
+                        <div class="kanban-column-header">
+                            <h3>🔄 Em Progresso</h3>
+                            <span class="note-count" id="count-doing">0</span>
+                        </div>
+                        <div class="kanban-column-content" id="column-doing" ondrop="handleNoteDrop(event)" ondragover="allowNoteDrop(event)">
+                            <!-- Post-its serão inseridos aqui -->
+                        </div>
+                    </div>
+
+                    <div class="kanban-column" data-column="done">
+                        <div class="kanban-column-header">
+                            <h3>✅ Concluído</h3>
+                            <span class="note-count" id="count-done">0</span>
+                        </div>
+                        <div class="kanban-column-content" id="column-done" ondrop="handleNoteDrop(event)" ondragover="allowNoteDrop(event)">
+                            <!-- Post-its serão inseridos aqui -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modal: Nova/Editar Anotação -->
+            <div class="modal" id="noteModal" style="display: none;">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2 id="noteModalTitle">➕ Nova Anotação</h2>
+                        <button class="modal-close" onclick="closeNoteModal()">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label for="noteTitle">Título *</label>
+                            <input type="text" id="noteTitle" class="form-input" placeholder="Digite o título da anotação" maxlength="100">
+                        </div>
+                        <div class="form-group">
+                            <label for="noteContent">Conteúdo</label>
+                            <textarea id="noteContent" class="form-input" rows="5" placeholder="Digite o conteúdo da anotação..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="noteColor">Cor do Post-it</label>
+                            <select id="noteColor" class="form-input">
+                                <option value="yellow">🟨 Amarelo</option>
+                                <option value="blue">🟦 Azul</option>
+                                <option value="green">🟩 Verde</option>
+                                <option value="pink">🩷 Rosa</option>
+                                <option value="orange">🟧 Laranja</option>
+                                <option value="purple">🟪 Roxo</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="noteColumn">Coluna</label>
+                            <select id="noteColumn" class="form-input">
+                                <option value="todo">📋 A Fazer</option>
+                                <option value="doing">🔄 Em Progresso</option>
+                                <option value="done">✅ Concluído</option>
+                            </select>
+                        </div>
+                        <div class="form-actions">
+                            <button class="btn btn-primary" onclick="saveNote()">💾 Salvar</button>
+                            <button class="btn btn-secondary" onclick="closeNoteModal()">❌ Cancelar</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modal: Criar/Editar Teste Personalizado -->
+            <div class="modal" id="createTestModal" style="display: none;">
+                <div class="modal-content modal-large">
+                    <div class="modal-header">
+                        <h2 id="createTestModalTitle">➕ Criar Teste Personalizado</h2>
+                        <button class="modal-close" onclick="closeCreateTestModal()">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label for="testId">ID do Teste *</label>
+                            <input type="text" id="testId" class="form-input" placeholder="Ex: TC-USER-001" maxlength="50">
+                            <small class="form-help">Identificador único do teste (sem espaços)</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="testName">Nome do Teste *</label>
+                            <input type="text" id="testName" class="form-input" placeholder="Ex: Validar Login do Usuário" maxlength="200">
+                        </div>
+                        <div class="form-group">
+                            <label for="testDescription">Descrição</label>
+                            <textarea id="testDescription" class="form-input" rows="3" placeholder="Descreva o objetivo do teste..."></textarea>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="testModule">Módulo</label>
+                                <input type="text" id="testModule" class="form-input" placeholder="Ex: Autenticação" maxlength="100">
+                            </div>
+                            <div class="form-group">
+                                <label for="testPriority">Prioridade</label>
+                                <select id="testPriority" class="form-input">
+                                    <option value="1">1 - Muito Baixa</option>
+                                    <option value="2">2 - Baixa</option>
+                                    <option value="3" selected>3 - Média</option>
+                                    <option value="4">4 - Alta</option>
+                                    <option value="5">5 - Muito Alta</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="testImpact">Nível de Impacto</label>
+                                <select id="testImpact" class="form-input">
+                                    <option value="non_destructive" selected>🟢 Não-Destrutivo</option>
+                                    <option value="partially_destructive">🟡 Parcialmente Destrutivo</option>
+                                    <option value="destructive">🔴 Destrutivo</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="testTags">Tags (separadas por vírgula)</label>
+                            <input type="text" id="testTags" class="form-input" placeholder="Ex: login, autenticação, UI">
+                            <small class="form-help">Use vírgulas para separar múltiplas tags</small>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label>Ações do Teste</label>
+                            <div id="testActionsContainer">
+                                <!-- Ações serão adicionadas aqui -->
+                            </div>
+                            <button type="button" class="btn btn-secondary" onclick="addTestAction()" style="margin-top: 12px;">
+                                ➕ Adicionar Ação
+                            </button>
+                        </div>
+                        
+                        <div class="form-actions">
+                            <button class="btn btn-primary" onclick="saveUserTest()">💾 Salvar Teste</button>
+                            <button class="btn btn-secondary" onclick="closeCreateTestModal()">❌ Cancelar</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modal: Perfil -->
+            <div class="modal" id="profileModal" style="display: none;">
+                <div class="modal-content modal-large">
+                    <div class="modal-header">
+                        <h2>👤 Meu Perfil</h2>
+                        <button class="modal-close" onclick="closeProfileModal()">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="profile-container">
+                    <!-- Foto de Perfil -->
+                    <div class="profile-picture-section">
+                        <div class="profile-picture-container">
+                            <img id="profilePicture" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150'%3E%3Ccircle cx='75' cy='75' r='75' fill='%23e2e8f0'/%3E%3Ctext x='75' y='95' font-size='80' text-anchor='middle' fill='%2364748b'%3E👤%3C/text%3E%3C/svg%3E" alt="Foto de Perfil" class="profile-picture">
+                            <button class="btn btn-secondary" onclick="document.getElementById('profilePictureInput').click()">
+                                📷 Alterar Foto
+                            </button>
+                            <input type="file" id="profilePictureInput" accept="image/*" style="display: none;" onchange="uploadProfilePicture(event)">
+                        </div>
+                    </div>
+
+                    <!-- Formulário de Edição -->
+                    <div class="profile-form">
+                        <div class="form-group">
+                            <label for="profileUsername">Nome de Usuário</label>
+                            <input type="text" id="profileUsername" class="form-input" readonly>
+                            <small class="form-help">O nome de usuário não pode ser alterado</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="profileFullName">Nome Completo</label>
+                            <input type="text" id="profileFullName" class="form-input" placeholder="Seu nome completo">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="profileEmail">Email</label>
+                            <input type="email" id="profileEmail" class="form-input" placeholder="seu@email.com">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="profileExperienceLevel">Nível de Experiência</label>
+                            <select id="profileExperienceLevel" class="form-input">
+                                <option value="beginner">Iniciante</option>
+                                <option value="intermediate">Intermediário</option>
+                                <option value="advanced">Avançado</option>
+                                <option value="expert">Especialista</option>
+                            </select>
+                            <small class="form-help">Alterar o nível de experiência pode afetar as recomendações da IA</small>
+                        </div>
+
+                        <div class="form-actions">
+                            <button class="btn btn-primary" onclick="saveProfile()">
+                                💾 Salvar Alterações
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Alterar Senha -->
+                    <div class="profile-section">
+                        <h3>🔒 Alterar Senha</h3>
+                        <div class="form-group">
+                            <label for="currentPassword">Senha Atual</label>
+                            <input type="password" id="currentPassword" class="form-input" placeholder="Digite sua senha atual">
+                        </div>
+                        <div class="form-group">
+                            <label for="newPassword">Nova Senha</label>
+                            <input type="password" id="newPassword" class="form-input" placeholder="Digite a nova senha">
+                        </div>
+                        <div class="form-group">
+                            <label for="confirmPassword">Confirmar Nova Senha</label>
+                            <input type="password" id="confirmPassword" class="form-input" placeholder="Confirme a nova senha">
+                        </div>
+                        <div class="form-actions">
+                            <button class="btn btn-primary" onclick="changePassword()">
+                                🔑 Alterar Senha
+                            </button>
+                        </div>
+                    </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Modal: Preferências -->
+            <div class="modal" id="preferencesModal" style="display: none;">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2>⚙️ Preferências</h2>
+                        <button class="modal-close" onclick="closePreferencesModal()">×</button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="form-group">
+                            <label for="themeSelectModal">Tema da Interface</label>
+                            <select id="themeSelectModal" class="form-input" onchange="changeTheme(this.value)">
+                                <option value="light">🌞 Claro</option>
+                                <option value="dark">🌙 Escuro</option>
+                                <option value="auto">🔄 Automático (Sistema)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="notificationsEnabledModal" onchange="updateNotificationPreference()">
+                                <span>Receber notificações</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="emailNotificationsModal" onchange="updateNotificationPreference()">
+                                <span>Notificações por email</span>
+                            </label>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

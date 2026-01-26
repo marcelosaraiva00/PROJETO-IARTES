@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Registro - IARTES</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="auth-page">
+    <div class="auth-container">
+        <div class="auth-card">
+            <div class="auth-header">
+                <div class="logo">
+                    <span class="logo-icon">🤖</span>
+                    <span class="logo-text">IARTES</span>
+                </div>
+                <h1>Criar Conta</h1>
+                <p>Registre-se para começar a usar o sistema</p>
+            </div>
+
+            <form id="registerForm" class="auth-form">
+                <div class="form-group">
+                    <label for="username">👤 Nome de Usuário *</label>
+                    <input type="text" id="username" name="username" required 
+                           placeholder="Escolha um username único" autocomplete="username">
+                    <small>Mínimo 3 caracteres</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="full_name">📝 Nome Completo</label>
+                    <input type="text" id="full_name" name="full_name" 
+                           placeholder="Seu nome completo (opcional)">
+                </div>
+
+                <div class="form-group">
+                    <label for="email">📧 Email</label>
+                    <input type="email" id="email" name="email" 
+                           placeholder="seu@email.com (opcional)" autocomplete="email">
+                </div>
+
+                <div class="form-group">
+                    <label for="password">🔒 Senha *</label>
+                    <input type="password" id="password" name="password" required 
+                           placeholder="Mínimo 4 caracteres" autocomplete="new-password">
+                    <small>Mínimo 4 caracteres</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="password_confirm">🔒 Confirmar Senha *</label>
+                    <input type="password" id="password_confirm" name="password_confirm" required 
+                           placeholder="Digite a senha novamente" autocomplete="new-password">
+                </div>
+
+                <div class="form-group">
+                    <label for="experience_level">🎯 Nível de Experiência em Testes *</label>
+                    <select id="experience_level" name="experience_level" required>
+                        <option value="beginner">🌱 Iniciante - Começando em testes</option>
+                        <option value="intermediate">📚 Intermediário - Alguma experiência</option>
+                        <option value="advanced">🚀 Avançado - Experiência sólida</option>
+                        <option value="expert">⭐ Especialista - Muito experiente</option>
+                    </select>
+                    <small>O sistema ajustará as recomendações baseado no seu nível</small>
+                </div>
+
+                <div id="errorMessage" class="error-message" style="display: none;"></div>
+
+                <button type="submit" class="btn btn-primary btn-large btn-block">
+                    ✨ Criar Conta
+                </button>
+
+                <div class="auth-footer">
+                    <p>Já tem uma conta? <a href="/login">Fazer login</a></p>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('registerForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const passwordConfirm = document.getElementById('password_confirm').value;
+            const fullName = document.getElementById('full_name').value.trim();
+            const email = document.getElementById('email').value.trim();
+            const experienceLevel = document.getElementById('experience_level').value;
+            const errorDiv = document.getElementById('errorMessage');
+            
+            // Limpar erro anterior
+            errorDiv.style.display = 'none';
+            errorDiv.textContent = '';
+            
+            // Validações
+            if (!username || !password) {
+                errorDiv.textContent = 'Username e senha são obrigatórios';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            if (username.length < 3) {
+                errorDiv.textContent = 'Username deve ter pelo menos 3 caracteres';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            if (password.length < 4) {
+                errorDiv.textContent = 'Senha deve ter pelo menos 4 caracteres';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            if (password !== passwordConfirm) {
+                errorDiv.textContent = 'As senhas não coincidem';
+                errorDiv.style.display = 'block';
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ 
+                        username, 
+                        password, 
+                        full_name: fullName || null,
+                        email: email || null,
+                        experience_level: experienceLevel
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    // Registro bem-sucedido - redirecionar
+                    window.location.href = '/';
+                } else {
+                    // Mostrar erro
+                    errorDiv.textContent = data.error || 'Erro ao criar conta';
+                    errorDiv.style.display = 'block';
+                }
+            } catch (error) {
+                errorDiv.textContent = 'Erro de conexão. Tente novamente.';
+                errorDiv.style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html>
