@@ -90,6 +90,7 @@ class IARTESDatabase:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS recommendations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 test_ids TEXT NOT NULL,
                 recommended_order TEXT NOT NULL,
@@ -98,9 +99,17 @@ class IARTESDatabase:
                 estimated_total_time REAL,
                 estimated_resets INTEGER,
                 was_accepted BOOLEAN,
-                user_modifications TEXT
+                user_modifications TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id)
             )
         """)
+        
+        # Adicionar coluna user_id se não existir (migração)
+        try:
+            cursor.execute("ALTER TABLE recommendations ADD COLUMN user_id INTEGER")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_recommendations_user_id ON recommendations(user_id)")
+        except:
+            pass  # Coluna já existe
         
         # Tabela de execuções (relaciona recommendation com feedbacks)
         cursor.execute("""
@@ -474,11 +483,12 @@ class IARTESDatabase:
         
         cursor.execute("""
             INSERT INTO recommendations (
-                test_ids, recommended_order, method,
+                user_id, test_ids, recommended_order, method,
                 confidence_score, estimated_total_time, estimated_resets,
                 was_accepted, user_modifications
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
+            recommendation.get('user_id'),
             json.dumps(recommendation['test_ids']),
             json.dumps(recommendation['recommended_order']),
             recommendation['method'],
@@ -491,6 +501,72 @@ class IARTESDatabase:
         
         self.conn.commit()
         return cursor.lastrowid
+    
+    def get_pending_recommendations(self, user_id: int) -> List[Dict[str, Any]]:
+        """
+        Retorna recomendações pendentes de feedback do usuário.
+        
+        Args:
+            user_id: ID do usuário
+        
+        Returns:
+            Lista de recomendações pendentes com informações sobre quais testes já receberam feedback
+        """
+        cursor = self.conn.cursor()
+        
+        # Buscar recomendações do usuário ordenadas por data (mais recentes primeiro)
+        cursor.execute("""
+            SELECT 
+                r.id,
+                r.created_at,
+                r.test_ids,
+                r.recommended_order,
+                r.method,
+                r.confidence_score,
+                r.estimated_total_time,
+                r.estimated_resets
+            FROM recommendations r
+            WHERE r.user_id = ?
+            ORDER BY r.created_at DESC
+            LIMIT 10
+        """, (user_id,))
+        
+        recommendations = []
+        for row in cursor.fetchall():
+            rec = dict(row)
+            test_ids = json.loads(rec['test_ids'])
+            recommended_order = json.loads(rec['recommended_order'])
+            
+            # Verificar quais testes já receberam feedback desde a criação da recomendação
+            cursor.execute("""
+                SELECT DISTINCT test_case_id
+                FROM feedbacks
+                WHERE tester_id = ? 
+                AND test_case_id IN ({})
+                AND executed_at >= ?
+            """.format(','.join(['?'] * len(test_ids))), 
+            [user_id] + test_ids + [rec['created_at']])
+            
+            feedbacked_tests = {row['test_case_id'] for row in cursor.fetchall()}
+            
+            # Criar lista de testes pendentes (manter ordem da recomendação)
+            pending_tests = []
+            for test_id in recommended_order:
+                if test_id in test_ids:
+                    pending_tests.append({
+                        'test_id': test_id,
+                        'has_feedback': test_id in feedbacked_tests
+                    })
+            
+            rec['pending_tests'] = pending_tests
+            rec['total_tests'] = len(pending_tests)
+            rec['pending_count'] = sum(1 for t in pending_tests if not t['has_feedback'])
+            
+            # Só incluir se houver testes pendentes
+            if rec['pending_count'] > 0:
+                recommendations.append(rec)
+        
+        return recommendations
     
     def get_user_feedbacks(self, user_id: int, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """

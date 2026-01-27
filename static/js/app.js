@@ -728,7 +728,11 @@ function switchTab(tabName) {
     document.getElementById(`tab-${tabName}`).classList.add('active');
     
     // Carregar dados específicos da tab
-    if (tabName === 'estatisticas') {
+    if (tabName === 'dashboard') {
+        loadDashboard();
+    } else if (tabName === 'feedback') {
+        loadPendingFeedback();
+    } else if (tabName === 'estatisticas') {
         loadStatistics();
     } else if (tabName === 'pessoais') {
         loadPersonalStatistics();
@@ -1306,6 +1310,14 @@ async function submitFeedback() {
             await loadHeaderStats();
             
             showToast('✅ Feedback registrado com sucesso!', 'success');
+            
+            // Se há recomendações pendentes, avançar para o próximo teste
+            if (currentPendingRecommendation) {
+                setTimeout(async () => {
+                    await moveToNextPendingTest();
+                    resetFeedbackForm();
+                }, 1500);
+            }
         } else {
             showToast('❌ ' + result.message, 'error');
         }
@@ -1327,6 +1339,11 @@ function resetFeedbackForm() {
         s.textContent = '★';
     });
     document.getElementById('rating').value = 5;
+    
+    // Se não há recomendações pendentes, recarregar lista de testes
+    if (!currentPendingRecommendation) {
+        loadTests();
+    }
 }
 
 // Carregar estatísticas completas
@@ -2944,5 +2961,480 @@ async function deleteUserTest(testId) {
     } catch (error) {
         console.error('Erro ao deletar teste:', error);
         showToast('Erro ao excluir teste', 'error');
+    }
+}
+
+// ==================== DASHBOARD ====================
+
+let weeklyProductivityChart = null;
+let moduleDistributionChart = null;
+
+// Carregar dashboard
+async function loadDashboard() {
+    try {
+        const [dashboardData, executionHistory] = await Promise.all([
+            fetch('/api/dashboard').then(r => r.json()),
+            fetch('/api/dashboard/executions').then(r => r.json())
+        ]);
+        
+        // Atualizar cards de estatísticas do dia
+        updateDashboardStats(dashboardData);
+        
+        // Criar gráficos
+        createWeeklyProductivityChart(dashboardData.weekly_data);
+        createModuleDistributionChart(dashboardData.modules_today);
+        
+        // Carregar timeline de execuções
+        renderExecutionTimeline(executionHistory);
+        
+        // Carregar opções de filtros
+        loadTimelineFilters();
+        
+    } catch (error) {
+        console.error('Erro ao carregar dashboard:', error);
+        showToast('Erro ao carregar dashboard', 'error');
+    }
+}
+
+// Atualizar cards de estatísticas
+function updateDashboardStats(data) {
+    document.getElementById('dashboardTestsToday').textContent = data.tests_today || 0;
+    document.getElementById('dashboardTimeToday').textContent = formatTime(data.time_today || 0);
+    document.getElementById('dashboardSuccessToday').textContent = `${(data.success_rate_today || 0).toFixed(1)}%`;
+    document.getElementById('dashboardRatingToday').textContent = (data.avg_rating_today || 0).toFixed(1);
+}
+
+// Formatar tempo
+function formatTime(seconds) {
+    if (seconds < 60) {
+        return `${Math.round(seconds)}s`;
+    }
+    const minutes = Math.floor(seconds / 60);
+    const secs = Math.round(seconds % 60);
+    return `${minutes}m ${secs}s`;
+}
+
+// Criar gráfico de produtividade semanal
+function createWeeklyProductivityChart(weeklyData) {
+    const ctx = document.getElementById('weeklyProductivityChart');
+    if (!ctx) return;
+    
+    if (weeklyProductivityChart) {
+        weeklyProductivityChart.destroy();
+    }
+    
+    const labels = weeklyData.map(d => d.date);
+    const testsData = weeklyData.map(d => d.tests_count);
+    const timeData = weeklyData.map(d => d.total_time / 60); // Converter para minutos
+    
+    weeklyProductivityChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'Testes Executados',
+                    data: testsData,
+                    borderColor: 'rgb(59, 130, 246)',
+                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                    yAxisID: 'y',
+                    tension: 0.4
+                },
+                {
+                    label: 'Tempo Total (min)',
+                    data: timeData,
+                    borderColor: 'rgb(16, 185, 129)',
+                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                    yAxisID: 'y1',
+                    tension: 0.4
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
+            scales: {
+                y: {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    title: {
+                        display: true,
+                        text: 'Testes'
+                    }
+                },
+                y1: {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    title: {
+                        display: true,
+                        text: 'Tempo (min)'
+                    },
+                    grid: {
+                        drawOnChartArea: false,
+                    },
+                }
+            },
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top'
+                }
+            }
+        }
+    });
+}
+
+// Criar gráfico de distribuição por módulo
+function createModuleDistributionChart(modulesData) {
+    const ctx = document.getElementById('moduleDistributionChart');
+    if (!ctx) return;
+    
+    if (moduleDistributionChart) {
+        moduleDistributionChart.destroy();
+    }
+    
+    const labels = modulesData.map(d => d.module);
+    const data = modulesData.map(d => d.count);
+    
+    moduleDistributionChart = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: labels,
+            datasets: [{
+                data: data,
+                backgroundColor: [
+                    'rgba(59, 130, 246, 0.8)',
+                    'rgba(16, 185, 129, 0.8)',
+                    'rgba(245, 158, 11, 0.8)',
+                    'rgba(239, 68, 68, 0.8)',
+                    'rgba(139, 92, 246, 0.8)',
+                    'rgba(236, 72, 153, 0.8)'
+                ]
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'right'
+                }
+            }
+        }
+    });
+}
+
+// Renderizar timeline de execuções
+function renderExecutionTimeline(executions) {
+    const container = document.getElementById('executionTimeline');
+    if (!container) return;
+    
+    if (!executions || executions.length === 0) {
+        container.innerHTML = '<div class="no-data">Nenhuma execução encontrada no período selecionado.</div>';
+        return;
+    }
+    
+    // Agrupar por data
+    const groupedByDate = {};
+    executions.forEach(exec => {
+        const date = new Date(exec.executed_at).toLocaleDateString('pt-BR');
+        if (!groupedByDate[date]) {
+            groupedByDate[date] = [];
+        }
+        groupedByDate[date].push(exec);
+    });
+    
+    let html = '<div class="timeline">';
+    
+    Object.keys(groupedByDate).sort((a, b) => new Date(b) - new Date(a)).forEach(date => {
+        html += `<div class="timeline-date-group">
+            <div class="timeline-date-header">
+                <span class="timeline-date">${date}</span>
+                <span class="timeline-count">${groupedByDate[date].length} execuções</span>
+            </div>
+            <div class="timeline-items">`;
+        
+        groupedByDate[date].forEach(exec => {
+            const statusIcon = exec.success ? '✅' : '❌';
+            const statusClass = exec.success ? 'success' : 'failure';
+            const time = new Date(exec.executed_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+            
+            html += `
+                <div class="timeline-item ${statusClass}">
+                    <div class="timeline-item-time">${time}</div>
+                    <div class="timeline-item-content">
+                        <div class="timeline-item-header">
+                            <span class="timeline-item-test">${exec.test_case_id}</span>
+                            <span class="timeline-item-status">${statusIcon}</span>
+                        </div>
+                        <div class="timeline-item-details">
+                            <span class="timeline-item-module">📦 ${exec.module || 'N/A'}</span>
+                            <span class="timeline-item-time-spent">⏱️ ${formatTime(exec.actual_execution_time)}</span>
+                            ${exec.tester_rating ? `<span class="timeline-item-rating">⭐ ${exec.tester_rating}</span>` : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        
+        html += `</div></div>`;
+    });
+    
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+// Carregar opções de filtros
+async function loadTimelineFilters() {
+    try {
+        const response = await fetch('/api/testes/filters/options');
+        const data = await response.json();
+        
+        const moduleFilter = document.getElementById('timelineFilterModule');
+        if (moduleFilter) {
+            data.modules.forEach(module => {
+                const option = document.createElement('option');
+                option.value = module;
+                option.textContent = module;
+                moduleFilter.appendChild(option);
+            });
+        }
+        
+        // Adicionar event listeners aos filtros
+        document.getElementById('timelineFilterDate')?.addEventListener('change', applyTimelineFilters);
+        document.getElementById('timelineFilterModule')?.addEventListener('change', applyTimelineFilters);
+        document.getElementById('timelineFilterStatus')?.addEventListener('change', applyTimelineFilters);
+        
+    } catch (error) {
+        console.error('Erro ao carregar filtros:', error);
+    }
+}
+
+// Aplicar filtros na timeline
+async function applyTimelineFilters() {
+    const dateFilter = document.getElementById('timelineFilterDate')?.value || 'today';
+    const moduleFilter = document.getElementById('timelineFilterModule')?.value || '';
+    const statusFilter = document.getElementById('timelineFilterStatus')?.value || '';
+    
+    try {
+        const params = new URLSearchParams({
+            date: dateFilter,
+            module: moduleFilter,
+            status: statusFilter
+        });
+        
+        const response = await fetch(`/api/dashboard/executions?${params}`);
+        const executions = await response.json();
+        
+        renderExecutionTimeline(executions);
+    } catch (error) {
+        console.error('Erro ao aplicar filtros:', error);
+        showToast('Erro ao filtrar execuções', 'error');
+    }
+}
+
+// ==================== FEEDBACK PENDENTE ====================
+
+let currentPendingRecommendation = null;
+let currentPendingTestIndex = 0;
+
+// Carregar recomendações pendentes
+async function loadPendingFeedback() {
+    try {
+        const response = await fetch('/api/feedback/pending');
+        const data = await response.json();
+        
+        if (data.recommendations && data.recommendations.length > 0) {
+            renderPendingRecommendations(data.recommendations);
+            document.getElementById('pendingRecommendationsSection').style.display = 'block';
+            document.getElementById('feedbackFormContainer').style.display = 'none';
+        } else {
+            // Não há recomendações pendentes, mostrar formulário normal
+            document.getElementById('pendingRecommendationsSection').style.display = 'none';
+            document.getElementById('feedbackFormContainer').style.display = 'block';
+            document.getElementById('feedbackFormHeader').style.display = 'none';
+            await loadTests(); // Carregar lista de testes normal
+        }
+    } catch (error) {
+        console.error('Erro ao carregar feedback pendente:', error);
+        // Em caso de erro, mostrar formulário normal
+        document.getElementById('pendingRecommendationsSection').style.display = 'none';
+        document.getElementById('feedbackFormContainer').style.display = 'block';
+        document.getElementById('feedbackFormHeader').style.display = 'none';
+        await loadTests();
+    }
+}
+
+// Renderizar lista de recomendações pendentes
+function renderPendingRecommendations(recommendations) {
+    const container = document.getElementById('pendingRecommendationsList');
+    if (!container) return;
+    
+    if (recommendations.length === 0) {
+        container.innerHTML = '<div class="no-data">Nenhuma recomendação pendente de feedback.</div>';
+        return;
+    }
+    
+    let html = '';
+    recommendations.forEach(rec => {
+        const date = new Date(rec.created_at).toLocaleString('pt-BR');
+        const pendingTests = rec.tests.filter(t => !t.has_feedback);
+        const completedTests = rec.tests.filter(t => t.has_feedback);
+        
+        html += `
+            <div class="pending-recommendation-card">
+                <div class="pending-rec-header">
+                    <div>
+                        <h4>Recomendação de ${date}</h4>
+                        <div class="pending-rec-meta">
+                            <span class="badge-module">${rec.method}</span>
+                            <span class="badge-priority">Confiança: ${(rec.confidence_score * 100).toFixed(0)}%</span>
+                            <span class="badge-time">⏱️ ${(rec.estimated_total_time / 60).toFixed(1)} min</span>
+                        </div>
+                    </div>
+                    <div class="pending-rec-stats">
+                        <div class="stat-item">
+                            <span class="stat-label">Pendentes</span>
+                            <span class="stat-value">${rec.pending_count}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Concluídos</span>
+                            <span class="stat-value success">${completedTests.length}</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="pending-rec-tests">
+                    <div class="pending-tests-list">
+                        ${pendingTests.map((test, idx) => `
+                            <div class="pending-test-item" onclick="startFeedbackFromPending('${rec.recommendation_id}', ${idx})">
+                                <div class="pending-test-info">
+                                    <span class="pending-test-id">${test.test_id}</span>
+                                    <span class="pending-test-name">${test.name}</span>
+                                    <span class="pending-test-module">📦 ${test.module}</span>
+                                </div>
+                                <button class="btn btn-primary btn-sm">Dar Feedback</button>
+                            </div>
+                        `).join('')}
+                    </div>
+                    ${completedTests.length > 0 ? `
+                        <details class="completed-tests-section">
+                            <summary>✅ Testes já com feedback (${completedTests.length})</summary>
+                            <div class="completed-tests-list">
+                                ${completedTests.map(test => `
+                                    <div class="completed-test-item">
+                                        <span class="completed-test-id">${test.test_id}</span>
+                                        <span class="completed-test-name">${test.name}</span>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </details>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+    });
+    
+    container.innerHTML = html;
+}
+
+// Iniciar feedback a partir de uma recomendação pendente
+async function startFeedbackFromPending(recommendationId, testIndex) {
+    try {
+        const response = await fetch('/api/feedback/pending');
+        const data = await response.json();
+        
+        const recommendation = data.recommendations.find(r => r.recommendation_id == recommendationId);
+        if (!recommendation) {
+            showToast('Recomendação não encontrada', 'error');
+            return;
+        }
+        
+        const pendingTests = recommendation.tests.filter(t => !t.has_feedback);
+        if (testIndex >= pendingTests.length) {
+            showToast('Teste não encontrado', 'error');
+            return;
+        }
+        
+        currentPendingRecommendation = recommendation;
+        currentPendingTestIndex = testIndex;
+        
+        const test = pendingTests[testIndex];
+        
+        // Preencher formulário
+        const testSelect = document.getElementById('testSelect');
+        testSelect.value = test.test_id;
+        
+        // Disparar evento change para preencher outros campos
+        const event = new Event('change', { bubbles: true });
+        testSelect.dispatchEvent(event);
+        
+        // Mostrar formulário e esconder lista
+        document.getElementById('pendingRecommendationsSection').style.display = 'none';
+        document.getElementById('feedbackFormContainer').style.display = 'block';
+        document.getElementById('feedbackFormHeader').style.display = 'flex';
+        
+        // Scroll para o formulário
+        document.getElementById('feedbackFormContainer').scrollIntoView({ behavior: 'smooth' });
+        
+    } catch (error) {
+        console.error('Erro ao iniciar feedback:', error);
+        showToast('Erro ao carregar teste', 'error');
+    }
+}
+
+// Voltar para lista de recomendações pendentes
+function showPendingRecommendations() {
+    document.getElementById('pendingRecommendationsSection').style.display = 'block';
+    document.getElementById('feedbackFormContainer').style.display = 'none';
+    document.getElementById('feedbackFormHeader').style.display = 'none';
+    currentPendingRecommendation = null;
+    currentPendingTestIndex = 0;
+}
+
+// Avançar para próximo teste pendente após dar feedback
+async function moveToNextPendingTest() {
+    if (!currentPendingRecommendation) return;
+    
+    // Recarregar recomendações para obter estado atualizado
+    try {
+        const response = await fetch('/api/feedback/pending');
+        const data = await response.json();
+        
+        const recommendation = data.recommendations.find(
+            r => r.recommendation_id == currentPendingRecommendation.recommendation_id
+        );
+        
+        if (!recommendation) {
+            // Recomendação não existe mais (todos os testes foram concluídos)
+            showToast('Todos os testes desta recomendação foram concluídos!', 'success');
+            currentPendingRecommendation = null;
+            currentPendingTestIndex = 0;
+            await loadPendingFeedback();
+            return;
+        }
+        
+        const pendingTests = recommendation.tests.filter(t => !t.has_feedback);
+        
+        if (pendingTests.length > 0) {
+            // Ainda há testes pendentes, ir para o primeiro
+            await startFeedbackFromPending(recommendation.recommendation_id, 0);
+        } else {
+            // Todos os testes foram concluídos
+            showToast('Todos os testes desta recomendação foram concluídos!', 'success');
+            currentPendingRecommendation = null;
+            currentPendingTestIndex = 0;
+            await loadPendingFeedback();
+        }
+    } catch (error) {
+        console.error('Erro ao avançar para próximo teste:', error);
+        // Em caso de erro, voltar para lista
+        await loadPendingFeedback();
     }
 }

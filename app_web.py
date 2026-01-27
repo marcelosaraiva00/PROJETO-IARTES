@@ -8,7 +8,7 @@ root_dir = Path(__file__).parent
 sys.path.insert(0, str(root_dir))
 
 from flask import Flask, render_template, jsonify, request, session, redirect, url_for, send_file
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, List
 import json
 import hashlib
@@ -669,6 +669,26 @@ def get_recomendacao():
         except:
             pass
     
+    # Salvar recomendação no banco de dados
+    recommendation_id = None
+    try:
+        recommendation_data = {
+            'user_id': user_id,
+            'test_ids': [t.id for t in testes_selecionados],
+            'recommended_order': recomendacao.recommended_order,
+            'method': recomendacao.reasoning.get('method', 'N/A'),
+            'confidence_score': recomendacao.confidence_score,
+            'estimated_total_time': recomendacao.estimated_total_time,
+            'estimated_resets': recomendacao.estimated_resets,
+            'was_accepted': None,
+            'user_modifications': []
+        }
+        recommendation_id = db.add_recommendation(recommendation_data)
+    except Exception as e:
+        print(f"Erro ao salvar recomendação: {e}")
+        import traceback
+        traceback.print_exc()
+    
     return jsonify({
         'order': recomendacao.recommended_order,
         'details': ordem_detalhada,
@@ -677,7 +697,8 @@ def get_recomendacao():
         'confidence': recomendacao.confidence_score,
         'method': recomendacao.reasoning.get('method', 'N/A'),
         'training_samples': recomendacao.reasoning.get('training_samples', 0),
-        'explanation': explanation  # NOVO: Explicação da IA
+        'explanation': explanation,  # NOVO: Explicação da IA
+        'recommendation_id': recommendation_id  # NOVO: ID da recomendação salva
     })
 
 
@@ -738,6 +759,50 @@ def get_estatisticas():
     
     return jsonify(stats)
 
+
+@app.route('/api/feedback/pending')
+@login_required
+def get_pending_feedback():
+    """Retorna recomendações pendentes de feedback do usuário"""
+    user_id = session.get('user_id')
+    
+    # Obter recomendações pendentes
+    pending_recommendations = db.get_pending_recommendations(user_id)
+    
+    # Enriquecer com informações dos testes
+    all_tests = get_all_test_cases(user_id)
+    test_map = {tc.id: tc for tc in all_tests}
+    
+    enriched_recommendations = []
+    for rec in pending_recommendations:
+        enriched_tests = []
+        for pending_test in rec['pending_tests']:
+            test_id = pending_test['test_id']
+            test_case = test_map.get(test_id)
+            if test_case:
+                enriched_tests.append({
+                    'test_id': test_id,
+                    'name': test_case.name,
+                    'module': test_case.module,
+                    'priority': test_case.priority,
+                    'estimated_time': test_case.get_total_estimated_time(),
+                    'has_feedback': pending_test['has_feedback']
+                })
+        
+        enriched_recommendations.append({
+            'recommendation_id': rec['id'],
+            'created_at': rec['created_at'],
+            'method': rec['method'],
+            'confidence_score': rec['confidence_score'],
+            'estimated_total_time': rec['estimated_total_time'],
+            'total_tests': rec['total_tests'],
+            'pending_count': rec['pending_count'],
+            'tests': enriched_tests
+        })
+    
+    return jsonify({
+        'recommendations': enriched_recommendations
+    })
 
 @app.route('/api/feedback', methods=['POST'])
 @login_required
@@ -1657,6 +1722,133 @@ def get_model_evolution():
         return jsonify(evolution_data)
     except Exception as e:
         return jsonify({'error': f'Erro ao buscar dados: {str(e)}'}), 500
+
+@app.route('/api/dashboard')
+@login_required
+def get_dashboard():
+    """Retorna dados do dashboard personalizado do usuário"""
+    user_id = session.get('user_id')
+    cursor = db.conn.cursor()
+    
+    # Estatísticas do dia
+    today = datetime.now().date()
+    cursor.execute("""
+        SELECT 
+            COUNT(*) as tests_today,
+            SUM(actual_execution_time) as time_today,
+            AVG(CASE WHEN success = 1 THEN 1.0 ELSE 0.0 END) * 100 as success_rate_today,
+            AVG(tester_rating) as avg_rating_today
+        FROM feedbacks
+        WHERE tester_id = ? AND DATE(executed_at) = ?
+    """, (user_id, today))
+    today_stats = cursor.fetchone()
+    
+    # Dados semanais (últimos 7 dias)
+    weekly_data = []
+    for i in range(6, -1, -1):
+        date = (datetime.now() - timedelta(days=i)).date()
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as tests_count,
+                SUM(actual_execution_time) as total_time
+            FROM feedbacks
+            WHERE tester_id = ? AND DATE(executed_at) = ?
+        """, (user_id, date))
+        day_data = cursor.fetchone()
+        weekly_data.append({
+            'date': date.strftime('%d/%m'),
+            'tests_count': day_data['tests_count'] or 0,
+            'total_time': day_data['total_time'] or 0
+        })
+    
+    # Distribuição por módulo hoje
+    # Obter todos os testes para mapear módulos
+    all_tests = get_all_test_cases(user_id)
+    test_module_map = {tc.id: tc.module for tc in all_tests}
+    
+    # Obter feedbacks de hoje
+    cursor.execute("""
+        SELECT test_case_id
+        FROM feedbacks
+        WHERE tester_id = ? AND DATE(executed_at) = ?
+    """, (user_id, today))
+    
+    test_ids = [row['test_case_id'] for row in cursor.fetchall()]
+    module_counts = {}
+    for test_id in test_ids:
+        module = test_module_map.get(test_id, 'N/A')
+        module_counts[module] = module_counts.get(module, 0) + 1
+    
+    modules_today = [{'module': k, 'count': v} for k, v in module_counts.items()]
+    
+    return jsonify({
+        'tests_today': today_stats['tests_today'] or 0,
+        'time_today': today_stats['time_today'] or 0,
+        'success_rate_today': today_stats['success_rate_today'] or 0,
+        'avg_rating_today': today_stats['avg_rating_today'] or 0,
+        'weekly_data': weekly_data,
+        'modules_today': modules_today
+    })
+
+@app.route('/api/dashboard/executions')
+@login_required
+def get_dashboard_executions():
+    """Retorna histórico de execuções para timeline"""
+    user_id = session.get('user_id')
+    date_filter = request.args.get('date', 'today')
+    module_filter = request.args.get('module', '')
+    status_filter = request.args.get('status', '')
+    
+    cursor = db.conn.cursor()
+    
+    # Construir query base
+    # Obter mapeamento de módulos
+    all_tests = get_all_test_cases(user_id)
+    test_module_map = {tc.id: tc.module for tc in all_tests}
+    
+    query = """
+        SELECT 
+            f.test_case_id,
+            f.executed_at,
+            f.actual_execution_time,
+            f.success,
+            f.tester_rating
+        FROM feedbacks f
+        WHERE f.tester_id = ?
+    """
+    params = [user_id]
+    
+    # Aplicar filtro de data
+    if date_filter == 'today':
+        query += " AND DATE(f.executed_at) = DATE('now')"
+    elif date_filter == 'week':
+        query += " AND DATE(f.executed_at) >= DATE('now', '-7 days')"
+    elif date_filter == 'month':
+        query += " AND DATE(f.executed_at) >= DATE('now', '-30 days')"
+    # 'all' não adiciona filtro de data
+    
+    # Aplicar filtro de módulo (será aplicado após buscar os dados)
+    
+    # Aplicar filtro de status
+    if status_filter == 'success':
+        query += " AND f.success = 1"
+    elif status_filter == 'failure':
+        query += " AND f.success = 0"
+    
+    query += " ORDER BY f.executed_at DESC LIMIT 100"
+    
+    cursor.execute(query, params)
+    executions = [dict(row) for row in cursor.fetchall()]
+    
+    # Adicionar módulo e aplicar filtro de módulo
+    filtered_executions = []
+    for exec in executions:
+        exec['module'] = test_module_map.get(exec['test_case_id'], 'N/A')
+        if module_filter and exec['module'] != module_filter:
+            continue
+        filtered_executions.append(exec)
+    
+    return jsonify(filtered_executions)
 
 @app.route('/api/dashboard/executive')
 @login_required

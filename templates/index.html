@@ -14,8 +14,7 @@
         <div class="container">
             <div class="header-content">
                 <div class="logo">
-                    <span class="logo-icon">🤖</span>
-                    <span class="logo-text">IARTES</span>
+                    <span class="logo-text">TESTES MOTOROLA</span>
                 </div>
                 <div class="subtitle">Sistema Inteligente de Recomendação de Testes</div>
             </div>
@@ -94,7 +93,10 @@
         <div class="container">
             <!-- Tabs -->
             <div class="tabs">
-                <button class="tab-button active" data-tab="recomendacao">
+                <button class="tab-button active" data-tab="dashboard">
+                    🏠 Dashboard
+                </button>
+                <button class="tab-button" data-tab="recomendacao">
                     📋 Recomendação
                 </button>
                 <button class="tab-button" data-tab="feedback">
@@ -114,8 +116,86 @@
                 </button>
             </div>
 
+            <!-- Tab: Dashboard -->
+            <div class="tab-content active" id="tab-dashboard">
+                <div class="section-header">
+                    <h2>🏠 Dashboard Personalizado</h2>
+                    <p class="subtitle">Visão geral das suas atividades e progresso</p>
+                </div>
+
+                <!-- Cards de Estatísticas do Dia -->
+                <div class="dashboard-stats-grid">
+                    <div class="dashboard-stat-card">
+                        <div class="stat-icon">📊</div>
+                        <div class="stat-content">
+                            <div class="stat-label">Testes Executados Hoje</div>
+                            <div class="stat-value" id="dashboardTestsToday">-</div>
+                        </div>
+                    </div>
+                    <div class="dashboard-stat-card">
+                        <div class="stat-icon">⏱️</div>
+                        <div class="stat-content">
+                            <div class="stat-label">Tempo Total Hoje</div>
+                            <div class="stat-value" id="dashboardTimeToday">-</div>
+                        </div>
+                    </div>
+                    <div class="dashboard-stat-card">
+                        <div class="stat-icon">✅</div>
+                        <div class="stat-content">
+                            <div class="stat-label">Taxa de Sucesso Hoje</div>
+                            <div class="stat-value" id="dashboardSuccessToday">-</div>
+                        </div>
+                    </div>
+                    <div class="dashboard-stat-card">
+                        <div class="stat-icon">⭐</div>
+                        <div class="stat-content">
+                            <div class="stat-label">Avaliação Média Hoje</div>
+                            <div class="stat-value" id="dashboardRatingToday">-</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Gráficos de Produtividade -->
+                <div class="dashboard-charts-grid">
+                    <div class="dashboard-chart-card">
+                        <h3>📈 Produtividade Semanal</h3>
+                        <canvas id="weeklyProductivityChart"></canvas>
+                    </div>
+                    <div class="dashboard-chart-card">
+                        <h3>📊 Testes por Módulo (Hoje)</h3>
+                        <canvas id="moduleDistributionChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Histórico de Execuções Visual -->
+                <div class="dashboard-section">
+                    <div class="section-header">
+                        <h3>🕐 Histórico de Execuções</h3>
+                        <div class="timeline-filters">
+                            <select id="timelineFilterDate" class="filter-select">
+                                <option value="today">Hoje</option>
+                                <option value="week">Esta Semana</option>
+                                <option value="month">Este Mês</option>
+                                <option value="all">Todos</option>
+                            </select>
+                            <select id="timelineFilterModule" class="filter-select">
+                                <option value="">Todos os Módulos</option>
+                            </select>
+                            <select id="timelineFilterStatus" class="filter-select">
+                                <option value="">Todos os Status</option>
+                                <option value="success">✅ Sucesso</option>
+                                <option value="failure">❌ Falha</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="timeline-container" id="executionTimeline">
+                        <div class="loading">Carregando histórico...</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Tab: Recomendação -->
-            <div class="tab-content active" id="tab-recomendacao">
+            <div class="tab-content" id="tab-recomendacao">
                 <!-- Etapa 1: Seleção de Testes -->
                 <div id="step1-selection" class="recommendation-step">
                     <div class="section-header">
@@ -242,7 +322,25 @@
                     <p class="subtitle">Ajude a IA a aprender com suas execuções</p>
                 </div>
 
-                <div class="feedback-form-container">
+                <!-- Recomendações Pendentes -->
+                <div id="pendingRecommendationsSection" class="pending-recommendations-section" style="display: none;">
+                    <div class="section-header">
+                        <h3>📋 Recomendações Pendentes de Feedback</h3>
+                        <p class="subtitle">Selecione uma recomendação para dar feedback nos testes</p>
+                    </div>
+                    <div id="pendingRecommendationsList" class="pending-recommendations-list">
+                        <div class="loading">Carregando recomendações pendentes...</div>
+                    </div>
+                </div>
+
+                <!-- Formulário de Feedback -->
+                <div class="feedback-form-container" id="feedbackFormContainer">
+                    <div class="section-header" id="feedbackFormHeader" style="display: none;">
+                        <h3>📝 Dar Feedback</h3>
+                        <button class="btn btn-secondary" onclick="showPendingRecommendations()">
+                            ← Voltar para Recomendações
+                        </button>
+                    </div>
                     <form id="feedbackForm" class="feedback-form">
                         <div class="form-group">
                             <label for="testSelect">Teste Executado</label>
