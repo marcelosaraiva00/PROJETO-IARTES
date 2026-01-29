@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/static/css/style.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
 </head>
 <body>
     <!-- Header -->
@@ -93,10 +94,10 @@
         <div class="container">
             <!-- Tabs -->
             <div class="tabs">
-                <button class="tab-button active" data-tab="dashboard">
+                <button class="tab-button" data-tab="dashboard">
                     🏠 Dashboard
                 </button>
-                <button class="tab-button" data-tab="recomendacao">
+                <button class="tab-button active" data-tab="recomendacao">
                     📋 Recomendação
                 </button>
                 <button class="tab-button" data-tab="feedback">
@@ -117,7 +118,7 @@
             </div>
 
             <!-- Tab: Dashboard -->
-            <div class="tab-content active" id="tab-dashboard">
+            <div class="tab-content" id="tab-dashboard">
                 <div class="section-header">
                     <h2>🏠 Dashboard Personalizado</h2>
                     <p class="subtitle">Visão geral das suas atividades e progresso</p>
@@ -195,7 +196,7 @@
             </div>
 
             <!-- Tab: Recomendação -->
-            <div class="tab-content" id="tab-recomendacao">
+            <div class="tab-content active" id="tab-recomendacao">
                 <!-- Etapa 1: Seleção de Testes -->
                 <div id="step1-selection" class="recommendation-step">
                     <div class="section-header">
@@ -262,6 +263,44 @@
 
                     <div class="info-banner">
                         💡 <strong>Dica:</strong> Você pode arrastar os testes para reordenar manualmente. A IA aprende com suas modificações!
+                    </div>
+
+                    <!-- Visualização em Árvore/Grafo -->
+                    <div id="recommendationGraphContainer" class="recommendation-graph-container" style="display: none;">
+                        <div class="section-header">
+                            <h3>🌳 Visualização da Ordem Recomendada</h3>
+                            <div class="graph-controls">
+                                <button class="btn btn-secondary btn-sm" onclick="toggleGraphLayout()" id="toggleLayoutBtn">
+                                    🔄 Árvore Hierárquica
+                                </button>
+                                <button class="btn btn-secondary btn-sm" onclick="resetGraphZoom()">
+                                    🔍 Resetar Zoom
+                                </button>
+                            </div>
+                        </div>
+                        <div id="recommendationGraph" class="recommendation-graph"></div>
+                        <div class="graph-legend">
+                            <div class="legend-item">
+                                <span class="legend-color" style="background: #10b981;"></span>
+                                <span>Próximo a executar</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color" style="background: #3b82f6;"></span>
+                                <span>Pendente</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color" style="background: #94a3b8;"></span>
+                                <span>Concluído</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-line" style="border-top: 2px solid #10b981;"></span>
+                                <span>Ordem recomendada</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-line" style="border-top: 2px dashed #64748b;"></span>
+                                <span>Dependência</span>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Explicação da IA (NOVO) -->

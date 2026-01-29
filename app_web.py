@@ -902,6 +902,39 @@ def add_feedback():
         }), 400
 
 
+@app.route('/api/testes/dependencies', methods=['POST'])
+@login_required
+def get_test_dependencies():
+    """Retorna informações de dependências (pré-condições e pós-condições) dos testes"""
+    user_id = session.get('user_id')
+    data = request.json or {}
+    test_ids = data.get('test_ids', [])
+    
+    if not test_ids:
+        return jsonify({'dependencies': {}})
+    
+    # Obter todos os testes disponíveis
+    all_tests = get_all_test_cases(user_id)
+    test_map = {tc.id: tc for tc in all_tests}
+    
+    dependencies = {}
+    for test_id in test_ids:
+        test_case = test_map.get(test_id)
+        if test_case:
+            dependencies[test_id] = {
+                'preconditions': list(test_case.get_preconditions()),
+                'postconditions': list(test_case.get_postconditions()),
+                'dependencies': list(test_case.dependencies)
+            }
+        else:
+            dependencies[test_id] = {
+                'preconditions': [],
+                'postconditions': [],
+                'dependencies': []
+            }
+    
+    return jsonify({'dependencies': dependencies})
+
 @app.route('/api/modulos')
 @login_required
 def get_modulos():

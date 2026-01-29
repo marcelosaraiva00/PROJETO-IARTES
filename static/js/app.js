@@ -1050,8 +1050,16 @@ async function solicitarRecomendacao() {
     }
 }
 
+// Variáveis globais para o grafo
+let recommendationGraphNetwork = null;
+let currentGraphLayout = 'hierarchical'; // 'hierarchical' ou 'force'
+let graphUpdateTimeout = null; // Para debounce de atualizações
+
 // Exibir recomendação
-function displayRecommendation(rec) {
+async function displayRecommendation(rec) {
+    // Salvar recomendação atual
+    currentRecommendation = rec;
+    
     // Salvar ordem original da IA (NOVO!)
     originalRecommendedOrder = rec.details.map(test => test.id);
     
@@ -1080,6 +1088,9 @@ function displayRecommendation(rec) {
         }
     }
     
+    // Criar visualização em árvore/grafo
+    await createRecommendationGraph(rec);
+    
     // Exibir lista de testes (drag-and-drop)
     const listContainer = document.getElementById('recommendedOrder');
     listContainer.innerHTML = '';
@@ -1089,6 +1100,7 @@ function displayRecommendation(rec) {
         testItem.className = `test-item ${test.is_destructive ? 'destructive' : 'non-destructive'}`;
         testItem.draggable = true;
         testItem.dataset.testId = test.id;
+        testItem.setAttribute('data-test-id', test.id);
         testItem.ondragstart = handleDragStart;
         testItem.ondragover = handleDragOver;
         testItem.ondrop = handleDrop;
@@ -1110,6 +1122,512 @@ function displayRecommendation(rec) {
         `;
         listContainer.appendChild(testItem);
     });
+}
+
+// Atualizar árvore baseada na ordem atual dos testes na lista (com debounce)
+async function updateRecommendationGraph() {
+    // Limpar timeout anterior se existir
+    if (graphUpdateTimeout) {
+        clearTimeout(graphUpdateTimeout);
+    }
+    
+    // Debounce: aguardar 300ms após última alteração antes de atualizar
+    graphUpdateTimeout = setTimeout(async () => {
+        if (!currentRecommendation) {
+            return;
+        }
+        
+        // Obter ordem atual dos testes na lista
+        const items = document.querySelectorAll('#recommendedOrder .test-item');
+        const currentOrder = Array.from(items).map(item => item.dataset.testId);
+        
+        if (currentOrder.length === 0 || currentOrder.length !== currentRecommendation.details.length) {
+            return;
+        }
+        
+        // Verificar se a ordem realmente mudou
+        const originalOrder = currentRecommendation.details.map(d => d.id);
+        const orderChanged = !currentOrder.every((id, idx) => id === originalOrder[idx]);
+        
+        if (!orderChanged) {
+            return; // Ordem não mudou, não precisa atualizar
+        }
+        
+        // Criar novo objeto de recomendação com a ordem atualizada
+        const updatedDetails = currentOrder.map(testId => {
+            return currentRecommendation.details.find(d => d.id === testId);
+        }).filter(d => d !== undefined);
+        
+        const updatedRecommendation = {
+            ...currentRecommendation,
+            details: updatedDetails,
+            order: currentOrder
+        };
+        
+        // Atualizar recomendação atual
+        currentRecommendation = updatedRecommendation;
+        
+        // Reconstruir árvore com nova ordem
+        await createRecommendationGraph(updatedRecommendation, true); // true = atualização dinâmica
+    }, 300);
+}
+
+// Criar visualização em árvore/grafo da recomendação
+async function createRecommendationGraph(rec, isUpdate = false) {
+    // Verificar se vis.js está disponível
+    if (typeof vis === 'undefined') {
+        console.warn('vis.js não está disponível. Visualização em grafo desabilitada.');
+        document.getElementById('recommendationGraphContainer').style.display = 'none';
+        return;
+    }
+    
+    try {
+        // Obter informações de dependências dos testes
+        const testIds = rec.details.map(t => t.id);
+        const response = await fetch('/api/testes/dependencies', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ test_ids: testIds })
+        });
+        
+        if (!response.ok) {
+            throw new Error('Erro ao buscar dependências');
+        }
+        
+        const dependenciesData = await response.json();
+        const testDependencies = dependenciesData.dependencies || {};
+        
+        // Construir estrutura de árvore baseada em dependências
+        const recommendedOrder = rec.details.map(t => t.id);
+        const testMap = new Map();
+        rec.details.forEach((test, index) => {
+            testMap.set(test.id, { ...test, index });
+        });
+        
+        // Calcular níveis hierárquicos baseados em dependências
+        const nodeLevels = new Map();
+        const processedNodes = new Set();
+        
+        // Função para calcular nível de um nó
+        function calculateLevel(testId) {
+            if (nodeLevels.has(testId)) {
+                return nodeLevels.get(testId);
+            }
+            
+            const deps = testDependencies[testId] || {};
+            const preconditions = deps.preconditions || [];
+            const testIndex = recommendedOrder.indexOf(testId);
+            
+            if (preconditions.length === 0) {
+                // Sem dependências, nível 0 (raiz)
+                nodeLevels.set(testId, 0);
+                return 0;
+            }
+            
+            // Encontrar nível máximo dos testes que fornecem pré-condições
+            let maxLevel = -1;
+            let hasProvider = false;
+            
+            recommendedOrder.forEach((tid, idx) => {
+                if (idx >= testIndex) return;
+                const providerDeps = testDependencies[tid] || {};
+                const postconditions = providerDeps.postconditions || [];
+                
+                if (preconditions.some(pc => postconditions.includes(pc))) {
+                    const level = calculateLevel(tid);
+                    maxLevel = Math.max(maxLevel, level);
+                    hasProvider = true;
+                }
+            });
+            
+            if (hasProvider) {
+                const level = maxLevel + 1;
+                nodeLevels.set(testId, level);
+                return level;
+            } else {
+                // Se não encontrou provedores explícitos, usar posição na ordem como nível
+                // Mas garantir que não seja nível 0 se não for o primeiro
+                const level = testIndex === 0 ? 0 : Math.min(testIndex, 3); // Limitar a 3 níveis máximos
+                nodeLevels.set(testId, level);
+                return level;
+            }
+        }
+        
+        // Calcular níveis para todos os nós
+        recommendedOrder.forEach(testId => {
+            calculateLevel(testId);
+        });
+        
+        // Se todos os nós estão no mesmo nível (sem dependências), criar estrutura de árvore baseada na ordem
+        const levels = Array.from(nodeLevels.values());
+        const uniqueLevels = new Set(levels);
+        
+        if (uniqueLevels.size === 1 && recommendedOrder.length > 1) {
+            // Todos no mesmo nível - criar estrutura de árvore balanceada
+            const totalTests = recommendedOrder.length;
+            
+            // Estratégia: criar uma árvore binária balanceada
+            // Primeiro teste é raiz (nível 0)
+            // Próximos testes são filhos, criando ramificações
+            
+            nodeLevels.set(recommendedOrder[0], 0); // Raiz
+            
+            if (totalTests > 1) {
+                // Segundo teste é filho da raiz (nível 1)
+                nodeLevels.set(recommendedOrder[1], 1);
+                
+                // Distribuir os demais testes criando ramificações
+                for (let i = 2; i < totalTests; i++) {
+                    // Calcular nível baseado na posição
+                    // Criar estrutura que se ramifica: cada nível pode ter múltiplos filhos
+                    const level = Math.min(Math.floor(Math.log2(i + 1)), Math.floor(totalTests / 2));
+                    nodeLevels.set(recommendedOrder[i], level);
+                }
+            }
+        }
+        
+        // Criar nós do grafo com níveis calculados
+        const nodes = rec.details.map((test, index) => {
+            const nodeId = test.id;
+            const isDestructive = test.is_destructive;
+            const borderColor = isDestructive ? '#ef4444' : '#10b981';
+            const level = nodeLevels.get(nodeId) || 0;
+            
+            return {
+                id: nodeId,
+                label: `${index + 1}. ${test.id}\n${test.name.substring(0, 20)}${test.name.length > 20 ? '...' : ''}`,
+                title: `${test.id}: ${test.name}\nMódulo: ${test.module}\nPrioridade: ${test.priority}\nTempo: ${test.estimated_time.toFixed(0)}s\nNível: ${level}`,
+                color: {
+                    background: level === 0 ? '#10b981' : (index === 0 ? '#fbbf24' : '#3b82f6'),
+                    border: borderColor,
+                    highlight: {
+                        background: '#fbbf24',
+                        border: '#f59e0b'
+                    }
+                },
+                font: {
+                    size: 12,
+                    color: '#1e293b',
+                    face: 'Inter',
+                    bold: level === 0
+                },
+                shape: 'box',
+                borderWidth: level === 0 ? 3 : (index === 0 ? 2 : 1),
+                level: level,
+                fixed: {
+                    x: false,
+                    y: false
+                }
+            };
+        });
+        
+        // Criar arestas baseadas em dependências (estrutura de árvore)
+        const edges = [];
+        const edgeSet = new Set(); // Para evitar arestas duplicadas
+        
+        // Mapear quais testes fornecem quais pós-condições
+        const postconditionProviders = new Map();
+        recommendedOrder.forEach((testId, idx) => {
+            const deps = testDependencies[testId] || {};
+            const postconditions = deps.postconditions || [];
+            postconditions.forEach(pc => {
+                if (!postconditionProviders.has(pc)) {
+                    postconditionProviders.set(pc, []);
+                }
+                postconditionProviders.get(pc).push({ testId, index: idx });
+            });
+        });
+        
+        recommendedOrder.forEach((testId, index) => {
+            const deps = testDependencies[testId] || {};
+            const preconditions = deps.preconditions || [];
+            const level = nodeLevels.get(testId) || 0;
+            
+            // Encontrar testes que fornecem pré-condições necessárias
+            const providers = [];
+            preconditions.forEach(precondition => {
+                const providersForPC = postconditionProviders.get(precondition) || [];
+                // Pegar o último teste que fornece essa pré-condição (mais próximo na ordem)
+                const validProviders = providersForPC.filter(p => p.index < index);
+                if (validProviders.length > 0) {
+                    const bestProvider = validProviders[validProviders.length - 1];
+                    if (!providers.find(p => p.testId === bestProvider.testId)) {
+                        providers.push(bestProvider);
+                    }
+                }
+            });
+            
+            if (providers.length > 0) {
+                // Conectar aos testes que fornecem pré-condições
+                providers.forEach(provider => {
+                    const edgeKey = `${provider.testId}->${testId}`;
+                    if (!edgeSet.has(edgeKey)) {
+                        edges.push({
+                            from: provider.testId,
+                            to: testId,
+                            arrows: 'to',
+                            color: {
+                                color: level === 0 ? '#10b981' : '#3b82f6',
+                                highlight: '#2563eb'
+                            },
+                            width: level === 0 ? 2.5 : 2,
+                            label: '',
+                            font: { align: 'middle', size: 9 },
+                            smooth: {
+                                type: 'straightCross',
+                                roundness: 0
+                            }
+                        });
+                        edgeSet.add(edgeKey);
+                    }
+                });
+            } else if (index > 0) {
+                // Se não tem dependências explícitas, criar estrutura de árvore baseada na ordem e níveis
+                const hasDirectConnection = edges.some(e => e.to === testId);
+                
+                if (!hasDirectConnection) {
+                    // Procurar um pai adequado baseado nos níveis
+                    let parentFound = false;
+                    
+                    // Primeiro, tentar encontrar um teste no nível anterior (level - 1)
+                    for (let i = index - 1; i >= 0; i--) {
+                        const candidateTest = recommendedOrder[i];
+                        const candidateLevel = nodeLevels.get(candidateTest) || 0;
+                        
+                        if (candidateLevel === level - 1) {
+                            const edgeKey = `${candidateTest}->${testId}`;
+                            if (!edgeSet.has(edgeKey)) {
+                                edges.push({
+                                    from: candidateTest,
+                                    to: testId,
+                                    arrows: 'to',
+                                    color: {
+                                        color: '#3b82f6',
+                                        highlight: '#2563eb'
+                                    },
+                                    width: 2,
+                                    label: '',
+                                    font: { align: 'middle', size: 9 },
+                                    smooth: {
+                                        type: 'straightCross',
+                                        roundness: 0
+                                    }
+                                });
+                                edgeSet.add(edgeKey);
+                                parentFound = true;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Se não encontrou pai no nível anterior, procurar no mesmo nível ou nível anterior próximo
+                    if (!parentFound) {
+                        for (let i = index - 1; i >= 0; i--) {
+                            const candidateTest = recommendedOrder[i];
+                            const candidateLevel = nodeLevels.get(candidateTest) || 0;
+                            
+                            // Aceitar se estiver no mesmo nível ou nível anterior
+                            if (candidateLevel <= level && candidateLevel >= level - 1) {
+                                const edgeKey = `${candidateTest}->${testId}`;
+                                if (!edgeSet.has(edgeKey)) {
+                                    edges.push({
+                                        from: candidateTest,
+                                        to: testId,
+                                        arrows: 'to',
+                                        color: {
+                                            color: candidateLevel === level ? '#10b981' : '#3b82f6',
+                                            highlight: '#2563eb'
+                                        },
+                                        width: candidateLevel === level ? 2 : 2,
+                                        label: candidateLevel === level ? `${i + 1}→${index + 1}` : '',
+                                        font: { align: 'middle', size: 10, color: '#64748b' },
+                                        smooth: {
+                                            type: 'straightCross',
+                                            roundness: 0
+                                        }
+                                    });
+                                    edgeSet.add(edgeKey);
+                                    parentFound = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Se ainda não encontrou, conectar ao teste anterior na ordem (fallback)
+                    if (!parentFound) {
+                        const prevTest = recommendedOrder[index - 1];
+                        const edgeKey = `${prevTest}->${testId}`;
+                        if (!edgeSet.has(edgeKey)) {
+                            edges.push({
+                                from: prevTest,
+                                to: testId,
+                                arrows: 'to',
+                                color: {
+                                    color: '#64748b',
+                                    highlight: '#475569'
+                                },
+                                width: 1.5,
+                                dashes: true,
+                                label: `${index}→${index + 1}`,
+                                font: { align: 'middle', size: 10, color: '#64748b' },
+                                smooth: {
+                                    type: 'straightCross',
+                                    roundness: 0
+                                }
+                            });
+                            edgeSet.add(edgeKey);
+                        }
+                    }
+                }
+            }
+        });
+        
+        // Criar container do grafo
+        const container = document.getElementById('recommendationGraph');
+        if (!container) {
+            console.warn('Container do grafo não encontrado');
+            return;
+        }
+        
+        // Destruir grafo anterior se existir
+        if (recommendationGraphNetwork) {
+            recommendationGraphNetwork.destroy();
+            recommendationGraphNetwork = null;
+        }
+        
+        // Configuração do grafo
+        const data = {
+            nodes: new vis.DataSet(nodes),
+            edges: new vis.DataSet(edges)
+        };
+        
+        const options = {
+            layout: {
+                hierarchical: {
+                    direction: 'UD', // Up to Down (Top to Bottom) - formato de árvore vertical
+                    sortMethod: 'directed',
+                    levelSeparation: 120, // Espaçamento vertical entre níveis
+                    nodeSpacing: 150, // Espaçamento horizontal entre nós do mesmo nível
+                    treeSpacing: 200, // Espaçamento entre subárvores
+                    blockShifting: true,
+                    edgeMinimization: true,
+                    parentCentralization: true,
+                    shakeTowards: 'leaves'
+                }
+            },
+            physics: {
+                enabled: false // Desabilitar física para manter estrutura de árvore
+            },
+            nodes: {
+                shape: 'box',
+                margin: 8,
+                widthConstraint: {
+                    maximum: 160
+                },
+                heightConstraint: {
+                    maximum: 80
+                },
+                chosen: {
+                    node: function(values, id, selected, hovering) {
+                        values.borderWidth = 4;
+                        values.shadow = true;
+                    }
+                }
+            },
+            edges: {
+                smooth: {
+                    type: 'straightCross', // Linhas retas para formato de árvore
+                    roundness: 0
+                },
+                arrows: {
+                    to: {
+                        enabled: true,
+                        scaleFactor: 0.8
+                    }
+                }
+            },
+            interaction: {
+                dragNodes: true,
+                dragView: true,
+                zoomView: true,
+                tooltipDelay: 100,
+                hover: true
+            }
+        };
+        
+        // Criar rede
+        recommendationGraphNetwork = new vis.Network(container, data, options);
+        
+        // Event listeners
+        recommendationGraphNetwork.on('click', function(params) {
+            if (params.nodes.length > 0) {
+                const nodeId = params.nodes[0];
+                // Scroll para o teste na lista
+                const allItems = document.querySelectorAll('.test-item');
+                for (const item of allItems) {
+                    if (item.dataset.testId === nodeId || item.getAttribute('data-test-id') === nodeId) {
+                        item.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        item.style.background = 'var(--selected-bg)';
+                        item.style.transition = 'background 0.3s';
+                        setTimeout(() => {
+                            item.style.background = '';
+                        }, 2000);
+                        break;
+                    }
+                }
+            }
+        });
+        
+        // Ajustar visualização automaticamente
+        setTimeout(() => {
+            if (recommendationGraphNetwork) {
+                recommendationGraphNetwork.fit({
+                    animation: {
+                        duration: isUpdate ? 300 : 500,
+                        easingFunction: 'easeInOutQuad'
+                    }
+                });
+            }
+        }, isUpdate ? 50 : 100);
+        
+        // Mostrar container do grafo
+        document.getElementById('recommendationGraphContainer').style.display = 'block';
+        
+    } catch (error) {
+        console.error('Erro ao criar grafo de recomendação:', error);
+        // Em caso de erro, esconder o grafo mas não quebrar o fluxo
+        const container = document.getElementById('recommendationGraphContainer');
+        if (container) {
+            container.style.display = 'none';
+        }
+    }
+}
+
+// Alternar layout do grafo (entre árvore e sequencial)
+function toggleGraphLayout() {
+    currentGraphLayout = currentGraphLayout === 'hierarchical' ? 'sequential' : 'hierarchical';
+    const btn = document.getElementById('toggleLayoutBtn');
+    btn.textContent = currentGraphLayout === 'hierarchical' 
+        ? '🔄 Árvore Hierárquica' 
+        : '🔄 Sequencial';
+    
+    // Recriar grafo com novo layout
+    if (currentRecommendation) {
+        createRecommendationGraph(currentRecommendation);
+    }
+}
+
+// Resetar zoom do grafo
+function resetGraphZoom() {
+    if (recommendationGraphNetwork) {
+        recommendationGraphNetwork.fit({
+            animation: {
+                duration: 500,
+                easingFunction: 'easeInOutQuad'
+            }
+        });
+    }
 }
 
 // Drag and Drop
@@ -1153,6 +1671,8 @@ function handleDrop(e) {
 
 function handleDragEnd(e) {
     this.style.opacity = '1';
+    // Atualizar árvore após finalizar o arrasto
+    updateRecommendationGraph();
 }
 
 function updateTestNumbers() {
@@ -1160,6 +1680,9 @@ function updateTestNumbers() {
     items.forEach((item, index) => {
         item.querySelector('.test-number').textContent = index + 1;
     });
+    
+    // Atualizar árvore dinamicamente quando a ordem for alterada
+    updateRecommendationGraph();
 }
 
 // Aceitar ordem (Etapa 2 → 3)
