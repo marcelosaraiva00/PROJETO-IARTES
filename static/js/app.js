@@ -1054,6 +1054,10 @@ async function solicitarRecomendacao() {
 let recommendationGraphNetwork = null;
 let currentGraphLayout = 'hierarchical'; // 'hierarchical' ou 'force'
 let graphUpdateTimeout = null; // Para debounce de atualizações
+let currentDependencies = null; // cache de /api/testes/dependencies para a recomendação atual
+let currentOrderViolations = null; // cache das violações da ordem atual (soft)
+let lastSuggestedOrder = null; // ordem sugerida (auto-correção) para a lista
+let graphHighlightTimeout = null; // debounce para atualizar destaque do grafo
 
 // Exibir recomendação
 async function displayRecommendation(rec) {
@@ -1062,6 +1066,17 @@ async function displayRecommendation(rec) {
     
     // Salvar ordem original da IA (NOVO!)
     originalRecommendedOrder = rec.details.map(test => test.id);
+
+    // Resetar estado de validação (avisos só aparecem após o usuário modificar)
+    currentOrderViolations = null;
+    lastSuggestedOrder = null;
+    // Manter o cache de dependências para o mesmo conjunto, mas limpar se trocar de conjunto
+    currentDependencies = null;
+    const warnBox = document.getElementById('orderWarnings');
+    if (warnBox) {
+        warnBox.style.display = 'none';
+        warnBox.innerHTML = '';
+    }
     
     // Atualizar info
     document.getElementById('recMethod').textContent = 
@@ -1088,7 +1103,7 @@ async function displayRecommendation(rec) {
         }
     }
     
-    // Criar visualização em árvore/grafo
+    // Criar visualização em árvore/grafo (isso também carrega dependências)
     await createRecommendationGraph(rec);
     
     // Exibir lista de testes (drag-and-drop)
@@ -1115,6 +1130,7 @@ async function displayRecommendation(rec) {
                     <span class="test-badge badge-module">📦 ${test.module}</span>
                     <span class="test-badge badge-priority">🎯 Prioridade ${test.priority}</span>
                     <span class="test-badge badge-time">⏱️ ${test.estimated_time.toFixed(0)}s</span>
+                    ${typeof test.failure_risk === 'number' ? `<span class="test-badge badge-risk">⚠️ Risco ${(test.failure_risk * 100).toFixed(0)}%</span>` : ''}
                     ${renderImpactBadge(test)}
                 </div>
             </div>
@@ -1122,6 +1138,8 @@ async function displayRecommendation(rec) {
         `;
         listContainer.appendChild(testItem);
     });
+    // Não validar aqui: a IA deve não gerar avisos.
+    // Avisos só aparecem quando o usuário modifica a ordem (drag-and-drop).
 }
 
 // Atualizar árvore baseada na ordem atual dos testes na lista (com debounce)
@@ -1166,10 +1184,276 @@ async function updateRecommendationGraph() {
         
         // Atualizar recomendação atual
         currentRecommendation = updatedRecommendation;
+
+        // Validar e exibir avisos (não bloqueia)
+        validateAndRenderOrderWarnings();
         
         // Reconstruir árvore com nova ordem
         await createRecommendationGraph(updatedRecommendation, true); // true = atualização dinâmica
     }, 300);
+}
+
+// ==================== SOFT CONSTRAINTS: validação de sequência lógica ====================
+function validateAndRenderOrderWarnings() {
+    const container = document.getElementById('orderWarnings');
+    if (!container) return null;
+
+    // Se ainda não temos dependências, não conseguimos validar
+    if (!currentDependencies || !currentRecommendation || !currentRecommendation.details) {
+        container.style.display = 'none';
+        currentOrderViolations = null;
+        // Limpar marcações visuais
+        document.querySelectorAll('#recommendedOrder .test-item.violation').forEach(el => el.classList.remove('violation'));
+        return null;
+    }
+
+    const items = document.querySelectorAll('#recommendedOrder .test-item');
+    const order = Array.from(items).map(i => i.dataset.testId).filter(Boolean);
+    const detailById = new Map(currentRecommendation.details.map(d => [d.id, d]));
+
+    // Só mostrar avisos se o usuário modificou a ordem (difere da ordem original da IA)
+    if (Array.isArray(originalRecommendedOrder) && originalRecommendedOrder.length === order.length) {
+        const isSameAsAI = order.every((tid, idx) => tid === originalRecommendedOrder[idx]);
+        if (isSameAsAI) {
+            container.style.display = 'none';
+            container.innerHTML = '';
+            currentOrderViolations = null;
+            lastSuggestedOrder = null;
+            document.querySelectorAll('#recommendedOrder .test-item.violation').forEach(el => el.classList.remove('violation'));
+            return {};
+        }
+    }
+
+    // Inferir dependências por pre/postconditions dentro do conjunto
+    const postProviders = new Map(); // state -> Set(testId)
+    for (const tid of order) {
+        const dep = currentDependencies[tid] || {};
+        const posts = dep.postconditions || [];
+        for (const st of posts) {
+            if (!postProviders.has(st)) postProviders.set(st, new Set());
+            postProviders.get(st).add(tid);
+        }
+    }
+
+    const violations = {}; // testId -> { missingDeps:[], missingPre:[] }
+    const executed = new Set();
+    let state = new Set();
+
+    for (const tid of order) {
+        const dep = currentDependencies[tid] || {};
+        const explicitDeps = new Set(dep.dependencies || []);
+        const inferredDeps = new Set(explicitDeps);
+
+        // infer deps from preconditions providers
+        const pre = dep.preconditions || [];
+        for (const req of pre) {
+            const providers = postProviders.get(req);
+            if (!providers) continue;
+            // Pré-condição pode ter múltiplos provedores (disjunção). Para evitar "super-dependências"
+            // e ciclos falsos, escolhemos 1 provedor "mais próximo antes" na ordem atual.
+            const candidates = [...providers].filter(pid => pid !== tid && order.includes(pid));
+            if (!candidates.length) continue;
+            const tidPos = order.indexOf(tid);
+            const before = candidates.filter(pid => order.indexOf(pid) < tidPos);
+            const best = before.length
+                ? before.sort((a, b) => order.indexOf(b) - order.indexOf(a))[0]
+                : candidates.sort((a, b) => order.indexOf(a) - order.indexOf(b))[0];
+            inferredDeps.add(best);
+        }
+
+        const missingDeps = Array.from(inferredDeps).filter(d => d && !executed.has(d) && order.includes(d));
+        // Só considerar como "inconsistência de ordem" se a pré-condição for interna (alguém no conjunto produz).
+        const missingPreInternal = pre.filter(p => p && postProviders.has(p) && !state.has(p));
+        const missingPreExternal = pre.filter(p => p && !postProviders.has(p) && !state.has(p));
+
+        if (missingDeps.length > 0 || missingPreInternal.length > 0) {
+            violations[tid] = { missingDeps, missingPre: missingPreInternal, externalPre: missingPreExternal };
+        }
+
+        // atualizar estado: aplica posts e trata destrutivo como reset simples
+        const detail = detailById.get(tid);
+        const isDestructive = detail ? !!detail.is_destructive : false;
+        if (isDestructive) state = new Set();
+        const posts = dep.postconditions || [];
+        for (const st of posts) state.add(st);
+
+        executed.add(tid);
+    }
+
+    currentOrderViolations = violations;
+
+    // Atualizar classes no DOM
+    items.forEach(el => {
+        const tid = el.dataset.testId;
+        if (tid && violations[tid]) el.classList.add('violation');
+        else el.classList.remove('violation');
+    });
+
+    const ids = Object.keys(violations);
+    if (ids.length === 0) {
+        container.style.display = 'none';
+        container.innerHTML = '';
+        return violations;
+    }
+
+    // ========= SUGESTÃO AUTOMÁTICA (não bloqueia): topological sort estável =========
+    const pos = new Map(order.map((tid, idx) => [tid, idx]));
+
+    // construir deps inferidas dentro do conjunto atual
+    const inferredDepsMap = new Map(); // testId -> Set(depId)
+    for (const tid of order) {
+        const dep = currentDependencies[tid] || {};
+        const explicitDeps = new Set(dep.dependencies || []);
+        const inferred = new Set(explicitDeps);
+        const pre = dep.preconditions || [];
+        for (const req of pre) {
+            const providers = postProviders.get(req);
+            if (!providers) continue;
+            // Escolher 1 provedor (mais próximo antes), evita ciclos e sugestão "ruim"
+            const candidates = [...providers].filter(pid => pid !== tid && pos.has(pid));
+            if (!candidates.length) continue;
+            const tidPos = pos.get(tid) ?? 10_000;
+            const before = candidates.filter(pid => (pos.get(pid) ?? 10_000) < tidPos);
+            const best = before.length
+                ? before.sort((a, b) => (pos.get(b) ?? 0) - (pos.get(a) ?? 0))[0]
+                : candidates.sort((a, b) => (pos.get(a) ?? 0) - (pos.get(b) ?? 0))[0];
+            inferred.add(best);
+        }
+        // manter apenas deps que estão no conjunto
+        const filtered = new Set([...inferred].filter(d => d && pos.has(d)));
+        inferredDepsMap.set(tid, filtered);
+    }
+
+    function computeSuggestedOrderStableTopo() {
+        const inDeg = new Map();
+        const outgoing = new Map();
+        for (const tid of order) {
+            inDeg.set(tid, 0);
+            outgoing.set(tid, []);
+        }
+        for (const [tid, deps] of inferredDepsMap.entries()) {
+            for (const d of deps) {
+                inDeg.set(tid, (inDeg.get(tid) || 0) + 1);
+                outgoing.get(d).push(tid);
+            }
+        }
+        const zero = [];
+        for (const tid of order) {
+            if ((inDeg.get(tid) || 0) === 0) zero.push(tid);
+        }
+        // ordenar por posição original para estabilidade
+        zero.sort((a, b) => (pos.get(a) ?? 0) - (pos.get(b) ?? 0));
+
+        const result = [];
+        const inDegLocal = new Map(inDeg);
+        const used = new Set();
+
+        while (zero.length) {
+            const tid = zero.shift();
+            if (used.has(tid)) continue;
+            used.add(tid);
+            result.push(tid);
+            for (const nxt of outgoing.get(tid) || []) {
+                inDegLocal.set(nxt, (inDegLocal.get(nxt) || 0) - 1);
+                if (inDegLocal.get(nxt) === 0) {
+                    zero.push(nxt);
+                    zero.sort((a, b) => (pos.get(a) ?? 0) - (pos.get(b) ?? 0));
+                }
+            }
+        }
+
+        // ciclo: anexar o resto na ordem atual
+        for (const tid of order) {
+            if (!used.has(tid)) result.push(tid);
+        }
+        return result;
+    }
+
+    lastSuggestedOrder = computeSuggestedOrderStableTopo();
+    const suggestionWouldChange = !order.every((tid, idx) => tid === lastSuggestedOrder[idx]);
+
+    // Render avisos + sugestões por item (human-friendly)
+    const lines = ids.slice(0, 10).map(tid => {
+        const v = violations[tid];
+        const parts = [];
+        if (v.missingDeps?.length) {
+            // sugerir mover após a última dependência (pela posição na lista)
+            const lastDep = [...v.missingDeps].sort((a, b) => (pos.get(b) ?? 0) - (pos.get(a) ?? 0))[0];
+            parts.push(`depende de: ${v.missingDeps.join(', ')} (sugestão: mover após <strong>${lastDep}</strong>)`);
+        }
+        if (v.missingPre?.length) {
+            // tentar achar providers das preconditions
+            const providers = [];
+            for (const pre of v.missingPre) {
+                const prov = postProviders.get(pre);
+                if (prov && prov.size) providers.push(`${pre} ← ${[...prov].join('/')}`);
+                else providers.push(`${pre} ← (sem provedor nesta seleção)`);
+            }
+            parts.push(`pré-condições: ${providers.join(' ; ')}`);
+        }
+        if (v.externalPre?.length) {
+            parts.push(`pré-condições externas: ${v.externalPre.join(', ')} (não é inconsistência de ordem)`);
+        }
+        return `<li><strong>${tid}</strong> — ${parts.join(' | ')}</li>`;
+    });
+
+    container.innerHTML = `
+        <div><strong>⚠️ Aviso:</strong> a ordem atual tem ${ids.length} possível(is) inconsistência(s) lógicas.</div>
+        <div class="warnings-meta">Você pode continuar mesmo assim — ou aplicar uma correção automática sugerida (sem bloquear).</div>
+        <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" onclick="applySuggestedOrder()" ${suggestionWouldChange ? '' : 'disabled'}>
+                🔧 Corrigir automaticamente
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="restoreOriginalOrder()">
+                ↩️ Voltar para ordem da IA
+            </button>
+        </div>
+        <details>
+            <summary>Ver detalhes e sugestões</summary>
+            <ul>${lines.join('')}</ul>
+        </details>
+    `;
+    container.style.display = 'block';
+
+    // Atualizar destaque do grafo (sem depender de mudança de ordem)
+    if (graphHighlightTimeout) clearTimeout(graphHighlightTimeout);
+    graphHighlightTimeout = setTimeout(() => {
+        if (currentRecommendation) {
+            createRecommendationGraph(currentRecommendation, true);
+        }
+    }, 100);
+
+    return violations;
+}
+
+function applyOrderToRecommendedList(orderIds) {
+    const container = document.getElementById('recommendedOrder');
+    if (!container) return;
+    const items = Array.from(container.querySelectorAll('.test-item'));
+    const map = new Map(items.map(el => [el.dataset.testId, el]));
+    container.innerHTML = '';
+    for (const tid of orderIds) {
+        const el = map.get(tid);
+        if (el) container.appendChild(el);
+    }
+    // anexar qualquer item perdido
+    for (const el of items) {
+        if (!container.contains(el)) container.appendChild(el);
+    }
+    updateTestNumbers(); // também atualiza grafo
+}
+
+function applySuggestedOrder() {
+    if (!lastSuggestedOrder || !Array.isArray(lastSuggestedOrder) || lastSuggestedOrder.length === 0) return;
+    applyOrderToRecommendedList(lastSuggestedOrder);
+    showToast('✅ Correção automática aplicada (você ainda pode editar).', 'success');
+}
+
+function restoreOriginalOrder() {
+    if (!originalRecommendedOrder || originalRecommendedOrder.length === 0) return;
+    // originalRecommendedOrder é a ordem original da IA (array de IDs)
+    applyOrderToRecommendedList(originalRecommendedOrder);
+    showToast('↩️ Ordem original da IA restaurada.', 'success');
 }
 
 // Criar visualização em árvore/grafo da recomendação
@@ -1182,20 +1466,30 @@ async function createRecommendationGraph(rec, isUpdate = false) {
     }
     
     try {
-        // Obter informações de dependências dos testes
+        // Obter informações de dependências dos testes (usar cache quando possível)
         const testIds = rec.details.map(t => t.id);
-        const response = await fetch('/api/testes/dependencies', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ test_ids: testIds })
-        });
-        
-        if (!response.ok) {
-            throw new Error('Erro ao buscar dependências');
+        let testDependencies = null;
+        const canUseCache =
+            currentDependencies &&
+            testIds.every(tid => currentDependencies[tid] !== undefined);
+        if (canUseCache) {
+            testDependencies = currentDependencies;
+        } else {
+            const response = await fetch('/api/testes/dependencies', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ test_ids: testIds })
+            });
+            
+            if (!response.ok) {
+                throw new Error('Erro ao buscar dependências');
+            }
+            
+            const dependenciesData = await response.json();
+            testDependencies = dependenciesData.dependencies || {};
+            // cache para validação soft
+            currentDependencies = testDependencies;
         }
-        
-        const dependenciesData = await response.json();
-        const testDependencies = dependenciesData.dependencies || {};
         
         // Construir estrutura de árvore baseada em dependências
         const recommendedOrder = rec.details.map(t => t.id);
@@ -1290,15 +1584,16 @@ async function createRecommendationGraph(rec, isUpdate = false) {
         const nodes = rec.details.map((test, index) => {
             const nodeId = test.id;
             const isDestructive = test.is_destructive;
-            const borderColor = isDestructive ? '#ef4444' : '#10b981';
+            const hasViolation = !!(currentOrderViolations && currentOrderViolations[test.id]);
+            const borderColor = hasViolation ? '#ef4444' : (isDestructive ? '#ef4444' : '#10b981');
             const level = nodeLevels.get(nodeId) || 0;
             
             return {
                 id: nodeId,
                 label: `${index + 1}. ${test.id}\n${test.name.substring(0, 20)}${test.name.length > 20 ? '...' : ''}`,
-                title: `${test.id}: ${test.name}\nMódulo: ${test.module}\nPrioridade: ${test.priority}\nTempo: ${test.estimated_time.toFixed(0)}s\nNível: ${level}`,
+                title: `${test.id}: ${test.name}\nMódulo: ${test.module}\nPrioridade: ${test.priority}\nTempo: ${test.estimated_time.toFixed(0)}s\nRisco de falha: ${typeof test.failure_risk === 'number' ? (test.failure_risk * 100).toFixed(0) + '%' : 'N/A'}\nNível: ${level}`,
                 color: {
-                    background: level === 0 ? '#10b981' : (index === 0 ? '#fbbf24' : '#3b82f6'),
+                    background: hasViolation ? '#fee2e2' : (level === 0 ? '#10b981' : (index === 0 ? '#fbbf24' : '#3b82f6')),
                     border: borderColor,
                     highlight: {
                         background: '#fbbf24',
@@ -1687,6 +1982,24 @@ function updateTestNumbers() {
 
 // Aceitar ordem (Etapa 2 → 3)
 function aceitarOrdem() {
+    // Soft-check: só avisar se o usuário modificou a ordem (difere da ordem original da IA).
+    const itemsNow = document.querySelectorAll('#recommendedOrder .test-item');
+    const currentOrderIds = Array.from(itemsNow).map(i => i.dataset.testId).filter(Boolean);
+    const userModified = Array.isArray(originalRecommendedOrder) &&
+        originalRecommendedOrder.length === currentOrderIds.length &&
+        !currentOrderIds.every((tid, idx) => tid === originalRecommendedOrder[idx]);
+
+    if (userModified) {
+        const violations = validateAndRenderOrderWarnings();
+        const violationCount = violations ? Object.keys(violations).length : 0;
+        if (violationCount > 0) {
+            const ok = confirm(
+                `⚠️ A ordem ajustada possui ${violationCount} possível(is) inconsistência(s) lógicas (dependências/pré-condições).\n\nDeseja continuar mesmo assim?`
+            );
+            if (!ok) return;
+        }
+    }
+
     // Capturar ordem atual (pode ter sido modificada)
     const items = document.querySelectorAll('#recommendedOrder .test-item');
     acceptedOrder = Array.from(items).map(item => ({

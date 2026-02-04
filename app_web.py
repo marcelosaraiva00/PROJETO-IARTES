@@ -141,6 +141,379 @@ def _generate_basic_explanation(test_cases: List[TestCase], recommended_order: L
         'reasoning': reasoning
     }
 
+def _get_time_bucket(dt: datetime) -> str:
+    """Converte horário em bucket simples."""
+    h = dt.hour
+    if 5 <= h <= 11:
+        return "morning"
+    if 12 <= h <= 17:
+        return "afternoon"
+    if 18 <= h <= 22:
+        return "evening"
+    return "night"
+
+def _safe_parse_datetime(value: Any) -> datetime:
+    """Tenta parsear datetime vindo do SQLite."""
+    if isinstance(value, datetime):
+        return value
+    if value is None:
+        return datetime.now()
+    try:
+        # ISO 8601
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        return datetime.now()
+
+def _estimate_resets_from_order(test_order: List[TestCase]) -> int:
+    """Estima reinicializações necessárias baseado em pre/postconditions."""
+    resets = 0
+    current_state = set()
+    for test in test_order:
+        required = test.get_preconditions()
+        if required and not required.issubset(current_state):
+            resets += 1
+            current_state = set()
+        current_state.update(test.get_postconditions())
+    return resets
+
+def _compute_context_and_failure_risk(
+    user_id: int,
+    selected_tests: List[TestCase],
+    all_tests_map: Dict[str, TestCase]
+) -> Dict[str, Any]:
+    """
+    Recomendações contextuais + predição de falha (MVP).
+    Retorna:
+      - risk_map: test_id -> risk (0..1)
+      - affinity_map: test_id -> affinity (0..1)
+      - context: metadados do contexto atual
+    """
+    now = datetime.now()
+    bucket = _get_time_bucket(now)
+    weekday = now.weekday()
+    is_weekend = weekday >= 5
+
+    test_ids = [t.id for t in selected_tests]
+    # Estatísticas por teste (usuário + global)
+    user_stats = db.get_test_outcome_stats(test_ids, user_id=user_id)
+    global_stats = db.get_test_outcome_stats(test_ids, user_id=None)
+
+    # Última atividade do usuário
+    last_fb = db.get_last_user_feedback(user_id)
+    last_test_id = last_fb.get("test_case_id") if last_fb else None
+    last_dt = _safe_parse_datetime(last_fb.get("executed_at")) if last_fb else None
+    last_module = all_tests_map.get(last_test_id).module if last_test_id and last_test_id in all_tests_map else None
+
+    # Estatísticas por módulo no contexto (últimos 1000 feedbacks do usuário)
+    module_counts = {}  # module -> (succ, total)
+    module_bucket_counts = {}  # (module, bucket) -> (succ, total)
+    try:
+        recent_user_feedbacks = db.get_user_feedbacks(user_id, limit=1000)
+        for fb in recent_user_feedbacks:
+            tid = fb.get("test_case_id")
+            tc = all_tests_map.get(tid)
+            mod = tc.module if tc else "N/A"
+            fb_dt = _safe_parse_datetime(fb.get("executed_at"))
+            fb_bucket = _get_time_bucket(fb_dt)
+            success = 1 if fb.get("success") else 0
+
+            s, tot = module_counts.get(mod, (0, 0))
+            module_counts[mod] = (s + success, tot + 1)
+
+            key = (mod, fb_bucket)
+            s2, tot2 = module_bucket_counts.get(key, (0, 0))
+            module_bucket_counts[key] = (s2 + success, tot2 + 1)
+    except Exception:
+        pass
+
+    def _beta_fail_prob(fails: int, total: int, prior_fail: float = 0.2, strength: float = 8.0) -> float:
+        """
+        Probabilidade de falha com smoothing Bayesiano (Beta prior).
+        - prior_fail: probabilidade inicial (ex: 20%)
+        - strength: "peso" do prior (quanto maior, mais conservador quando há poucos dados)
+        """
+        fails = int(fails or 0)
+        total = int(total or 0)
+        prior_fail = max(0.01, min(0.99, float(prior_fail)))
+        strength = max(1.0, float(strength))
+        a = prior_fail * strength
+        b = (1.0 - prior_fail) * strength
+        return float((fails + a) / (total + a + b))
+
+    def _laplace_success(succ: int, tot: int) -> float:
+        # smoothing simples para taxa de sucesso (usado na afinidade por módulo/bucket)
+        return (int(succ or 0) + 1) / (int(tot or 0) + 2) if tot is not None else 0.8
+
+    risk_map: Dict[str, float] = {}
+    affinity_map: Dict[str, float] = {}
+
+    for tc in selected_tests:
+        tid = tc.id
+        mod = tc.module or "N/A"
+
+        # Risk (falha): baseado em quantas vezes falhou + volume de execuções
+        # Regra: usa usuário se tiver dados suficientes; senão mistura com global; senão usa prior.
+        user_total = 0
+        user_fails = 0
+        if tid in user_stats:
+            st = user_stats[tid]
+            user_total = int(st.get("executions") or 0)
+            user_fails = int(st.get("failures") or 0)
+
+        global_total = 0
+        global_fails = 0
+        if tid in global_stats:
+            stg = global_stats[tid]
+            global_total = int(stg.get("executions") or 0)
+            global_fails = int(stg.get("failures") or 0)
+
+        # Se não houver histórico nenhum, usar prior levemente informado por tipo (heurística)
+        # (não é "falha", mas evita ficar sempre igual)
+        if user_total == 0 and global_total == 0:
+            base_prior = 0.15
+            if tc.has_destructive_actions():
+                base_prior += 0.05
+            if tc.priority >= 4:
+                base_prior += 0.03
+            fail_prob = _beta_fail_prob(0, 0, prior_fail=base_prior, strength=10.0)
+        else:
+            # Probabilidade de falha do usuário / global
+            user_fail_prob = _beta_fail_prob(user_fails, user_total) if user_total > 0 else None
+            global_fail_prob = _beta_fail_prob(global_fails, global_total) if global_total > 0 else None
+
+            # Peso do usuário cresce com amostras (até 50 execuções)
+            user_weight = min(0.85, 0.15 + (user_total / 50.0) * 0.7) if user_total > 0 else 0.0
+            if user_fail_prob is None:
+                fail_prob = global_fail_prob if global_fail_prob is not None else _beta_fail_prob(0, 0)
+            elif global_fail_prob is None:
+                fail_prob = user_fail_prob
+            else:
+                fail_prob = (user_weight * user_fail_prob) + ((1.0 - user_weight) * global_fail_prob)
+
+        risk = max(0.0, min(1.0, float(fail_prob)))
+        risk_map[tid] = risk
+
+        # Affinity: contexto (módulo recente + performance no bucket atual)
+        aff = 0.0
+        if last_module and mod == last_module:
+            aff += 0.15
+
+        bs, bt = module_bucket_counts.get((mod, bucket), (0, 0))
+        if bt > 0:
+            bucket_success = _laplace_success(bs, bt)
+            # puxa levemente para módulos onde o usuário tende a ir melhor nesse contexto
+            aff += max(0.0, min(0.25, (bucket_success - 0.5) * 0.5))
+
+        # fim de semana: reduzir um pouco prioridade de módulos “difíceis” (proxy: maior risco)
+        if is_weekend and risk > 0.5:
+            aff -= 0.05
+
+        affinity_map[tid] = max(0.0, min(1.0, aff))
+
+    context = {
+        "generated_at": now.isoformat(),
+        "time_bucket": bucket,
+        "weekday": weekday,
+        "is_weekend": is_weekend,
+        "last_test_id": last_test_id,
+        "last_module": last_module,
+        "minutes_since_last_feedback": (
+            int((now - last_dt).total_seconds() / 60) if last_dt else None
+        )
+    }
+
+    return {"risk_map": risk_map, "affinity_map": affinity_map, "context": context}
+
+def _contextual_reorder(
+    test_cases: List[TestCase],
+    base_order_ids: List[str],
+    risk_map: Dict[str, float],
+    affinity_map: Dict[str, float],
+    initial_module: str = None
+) -> List[TestCase]:
+    """
+    Reordena respeitando a sequência lógica (dependências) e usando risco/contexto
+    apenas como critérios de desempate entre testes "executáveis".
+
+    Lógica:
+    - Primeiro: respeitar `dependencies` explícitas + dependências inferidas por pre/postconditions.
+    - Depois: entre candidatos executáveis, priorizar risco de falha + contexto + prioridade.
+    """
+
+    test_by_id = {t.id: t for t in test_cases}
+    base_rank = {tid: idx for idx, tid in enumerate(base_order_ids)}
+
+    # Inferir dependências lógicas via pre/postconditions dentro do conjunto selecionado
+    # IMPORTANTE: pré-condição pode ter múltiplos provedores; escolher 1 provedor (melhor) evita
+    # "super-dependências" (exigir todos os provedores) que geram ciclos e falsos conflitos.
+    post_providers: Dict[str, List[str]] = {}
+    for tc in test_cases:
+        for pc in tc.get_postconditions():
+            post_providers.setdefault(pc, []).append(tc.id)
+
+    inferred_deps: Dict[str, set] = {tc.id: set(tc.dependencies) for tc in test_cases}
+    for tc in test_cases:
+        for pre in tc.get_preconditions():
+            providers = [pid for pid in post_providers.get(pre, []) if pid != tc.id]
+            if not providers:
+                continue
+            # Escolher provedor mais "natural" pela ordem base (mais cedo no base_rank)
+            best = min(providers, key=lambda pid: base_rank.get(pid, 10_000))
+            inferred_deps[tc.id].add(best)
+
+    remaining = set(test_cases)
+    ordered: List[TestCase] = []
+    current_module = initial_module
+    current_state = set()  # simulação simples de estado para preferir sequências compatíveis
+
+    while remaining:
+        executed_ids = {t.id for t in ordered}
+
+        # 1) Candidatos cujas dependências (explícitas + inferidas) estão satisfeitas
+        executable: List[TestCase] = []
+        for tc in remaining:
+            deps = inferred_deps.get(tc.id, set(tc.dependencies))
+            if all(dep_id in executed_ids for dep_id in deps):
+                executable.append(tc)
+
+        # Se houver ciclo/impasse, liberar pelo menos um teste (fallback seguro)
+        if not executable:
+            executable = list(remaining)
+
+        def _state_compatibility(tc: TestCase) -> float:
+            # Considerar apenas pré-condições "internas" (que alguém da seleção produz).
+            pre_all = tc.get_preconditions()
+            pre_internal = {p for p in pre_all if p in post_providers}
+            if not pre_internal:
+                return 1.0
+            return len(current_state.intersection(pre_internal)) / max(len(pre_internal), 1)
+
+        def _score(tc: TestCase):
+            same_mod_bonus = 0.05 if current_module and tc.module == current_module else 0.0
+            compat = _state_compatibility(tc)
+            # Penalizar se ainda falta muita precondição (mesmo deps satisfeitas, pode indicar necessidade de setup)
+            pre_penalty = 0.0
+            pre_all = tc.get_preconditions()
+            pre_internal = {p for p in pre_all if p in post_providers}
+            if pre_internal:
+                pre_penalty = (1.0 - compat) * 0.25
+            return (
+                -risk_map.get(tc.id, 0.0),                           # risco (falha) alto primeiro
+                -(affinity_map.get(tc.id, 0.0) + same_mod_bonus),   # contexto
+                -tc.priority,                                       # prioridade alta
+                -compat,                                            # preferir sequência que encaixa no estado atual
+                pre_penalty,                                        # evitar testes "fora de sequência"
+                tc.module,                                          # agrupar módulo
+                tc.has_destructive_actions(),                       # não-destrutivo primeiro
+                base_rank.get(tc.id, 10_000),                       # preservar tendência do modelo base
+                tc.get_total_estimated_time()                       # rápidos antes
+            )
+
+        executable.sort(key=_score)
+        next_test = executable[0]
+        ordered.append(next_test)
+        remaining.remove(next_test)
+        current_module = next_test.module
+        # Atualizar estado "lógico"
+        current_state.update(next_test.get_postconditions())
+        # Se destrutivo, considerar que pode invalidar estado (aprox.)
+        if next_test.has_destructive_actions():
+            current_state = set()
+
+    return ordered
+
+def _repair_order_for_logic(test_cases: List[TestCase], order_ids: List[str]) -> List[str]:
+    """
+    "Repair" de ordem para garantir consistência lógica:
+    - respeita dependencies explícitas
+    - respeita pré-condições internas (produzidas por algum teste da seleção)
+    - usa topological sort estável (mantém o máximo possível da ordem original)
+    - se detectar ciclo por dependências inferidas, cai para apenas dependencies explícitas
+    """
+    if not test_cases or not order_ids:
+        return order_ids
+
+    test_by_id = {t.id: t for t in test_cases}
+    order = [tid for tid in order_ids if tid in test_by_id]
+    pos = {tid: idx for idx, tid in enumerate(order)}
+
+    # mapear provedores de pós-condições
+    post_providers: Dict[str, List[str]] = {}
+    for tc in test_cases:
+        for st in tc.get_postconditions():
+            post_providers.setdefault(st, []).append(tc.id)
+
+    def build_edges(include_inferred: bool):
+        outgoing: Dict[str, List[str]] = {tid: [] for tid in order}
+        indeg: Dict[str, int] = {tid: 0 for tid in order}
+
+        def add_edge(a: str, b: str):
+            if a == b:
+                return
+            if a not in outgoing or b not in indeg:
+                return
+            # evitar duplicados
+            if b in outgoing[a]:
+                return
+            outgoing[a].append(b)
+            indeg[b] += 1
+
+        # dependencies explícitas
+        for tid in order:
+            tc = test_by_id[tid]
+            for dep in tc.dependencies:
+                if dep in test_by_id:
+                    add_edge(dep, tid)
+
+        if include_inferred:
+            # inferir dependências via pré-condições: escolher provedor mais próximo ANTES na ordem atual
+            for tid in order:
+                tc = test_by_id[tid]
+                pre = tc.get_preconditions()
+                for req in pre:
+                    providers = [p for p in post_providers.get(req, []) if p in pos and p != tid]
+                    if not providers:
+                        continue
+                    # escolher provedor mais próximo antes; se nenhum antes, escolher o mais cedo
+                    before = [p for p in providers if pos[p] < pos[tid]]
+                    if before:
+                        best = max(before, key=lambda p: pos[p])
+                    else:
+                        best = min(providers, key=lambda p: pos[p])
+                    add_edge(best, tid)
+
+        return outgoing, indeg
+
+    def topo_sort(outgoing: Dict[str, List[str]], indeg: Dict[str, int]) -> List[str]:
+        # Kahn com estabilidade por posição original
+        zeros = [tid for tid in order if indeg.get(tid, 0) == 0]
+        zeros.sort(key=lambda t: pos.get(t, 10_000))
+        res: List[str] = []
+        indeg_local = dict(indeg)
+        while zeros:
+            tid = zeros.pop(0)
+            res.append(tid)
+            for nxt in outgoing.get(tid, []):
+                indeg_local[nxt] -= 1
+                if indeg_local[nxt] == 0:
+                    zeros.append(nxt)
+                    zeros.sort(key=lambda t: pos.get(t, 10_000))
+        return res
+
+    # tentar com inferidas; se ciclo, cair para explícitas
+    out1, indeg1 = build_edges(include_inferred=True)
+    res1 = topo_sort(out1, indeg1)
+    if len(res1) == len(order):
+        return res1
+
+    out2, indeg2 = build_edges(include_inferred=False)
+    res2 = topo_sort(out2, indeg2)
+    if len(res2) == len(order):
+        return res2
+
+    # fallback final: ordem original
+    return order_ids
+
 def hash_password(password: str) -> str:
     """Gera hash SHA-256 da senha"""
     return hashlib.sha256(password.encode()).hexdigest()
@@ -581,6 +954,7 @@ def get_recomendacao():
     
     # Obter todos os testes disponíveis (padrão + personalizados)
     all_available_tests = get_all_test_cases(user_id)
+    all_tests_map = {t.id: t for t in all_available_tests}
     
     # Se for POST, pegar apenas os testes selecionados
     if request.method == 'POST':
@@ -615,8 +989,43 @@ def get_recomendacao():
         db=db,
         experience_level=experience_level
     )
+
+    # ==================== MELHORIAS IA: CONTEXTO + PREDIÇÃO DE FALHA (MVP) ====================
+    try:
+        ctx = _compute_context_and_failure_risk(user_id, testes_selecionados, all_tests_map)
+        risk_map = ctx["risk_map"]
+        affinity_map = ctx["affinity_map"]
+        context_info = ctx["context"]
+
+        reordered_tests = _contextual_reorder(
+            testes_selecionados,
+            recomendacao.recommended_order,
+            risk_map=risk_map,
+            affinity_map=affinity_map,
+            initial_module=context_info.get("last_module")
+        )
+
+        # Atualizar recomendação final
+        raw_ids = [t.id for t in reordered_tests]
+        # Repair final: garantir sequência lógica sempre na ordem da IA (sem "esconder")
+        fixed_ids = _repair_order_for_logic(testes_selecionados, raw_ids)
+        recomendacao.recommended_order = fixed_ids
+
+        fixed_tests = [all_tests_map[tid] for tid in fixed_ids if tid in all_tests_map]
+        recomendacao.estimated_total_time = sum(t.get_total_estimated_time() for t in fixed_tests)
+        recomendacao.estimated_resets = _estimate_resets_from_order(fixed_tests)
+        recomendacao.reasoning["contextual_enabled"] = True
+        recomendacao.reasoning["failure_prediction_enabled"] = True
+        recomendacao.reasoning["context"] = context_info
+        recomendacao.reasoning["logic_repaired"] = (fixed_ids != raw_ids)
+    except Exception as e:
+        print(f"Erro ao aplicar contexto/predição de falha: {e}")
+        import traceback
+        traceback.print_exc()
+        risk_map = {}
+        context_info = {}
     
-    # Detalhes de cada teste na ordem recomendada
+    # Detalhes de cada teste na ordem recomendada (inclui risco de falha)
     ordem_detalhada = []
     for test_id in recomendacao.recommended_order:
         tc = next((t for t in testes_selecionados if t.id == test_id), None)
@@ -630,7 +1039,8 @@ def get_recomendacao():
                 'estimated_time': tc.get_total_estimated_time(),
                 'is_destructive': tc.has_destructive_actions(),
                 'impact_level': tc.get_impact_level(),
-                'impact_composition': composition  # NOVO
+                'impact_composition': composition,
+                'failure_risk': float(risk_map.get(tc.id, 0.0))  # NOVO: predição de falha (0..1)
             })
     
     # Gerar explicação da recomendação
@@ -698,6 +1108,7 @@ def get_recomendacao():
         'method': recomendacao.reasoning.get('method', 'N/A'),
         'training_samples': recomendacao.reasoning.get('training_samples', 0),
         'explanation': explanation,  # NOVO: Explicação da IA
+        'context': context_info,     # NOVO: contexto usado na recomendação
         'recommendation_id': recommendation_id  # NOVO: ID da recomendação salva
     })
 

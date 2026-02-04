@@ -27,6 +27,8 @@
     --badge-priority-text: #92400e;
     --badge-time-bg: #e0e7ff;
     --badge-time-text: #4338ca;
+    --badge-risk-bg: #fee2e2;
+    --badge-risk-text: #991b1b;
     --star-inactive: #cbd5e1;
     --star-active: #fbbf24;
     --bar-bg: #e2e8f0;
@@ -62,6 +64,8 @@
     --badge-priority-text: #fcd34d;
     --badge-time-bg: rgba(99, 102, 241, 0.2);
     --badge-time-text: #a5b4fc;
+    --badge-risk-bg: rgba(239, 68, 68, 0.18);
+    --badge-risk-text: #fca5a5;
     --star-inactive: #475569;
     --star-active: #fbbf24;
     --bar-bg: #334155;
@@ -472,6 +476,57 @@ body {
 .badge-time {
     background: var(--badge-time-bg);
     color: var(--badge-time-text);
+}
+
+.badge-risk {
+    background: var(--badge-risk-bg);
+    color: var(--badge-risk-text);
+}
+
+/* ==================== AVISOS DE ORDEM (SOFT CONSTRAINTS) ==================== */
+.order-warnings{
+    margin: 16px 0 22px 0;
+    padding: 14px 16px;
+    border-radius: 10px;
+    background: var(--alert-medium-bg);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow);
+}
+.order-warnings strong{
+    font-weight: 700;
+}
+.order-warnings .warnings-meta{
+    margin-top: 6px;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+.order-warnings details{
+    margin-top: 10px;
+}
+.order-warnings summary{
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+.order-warnings ul{
+    margin-top: 8px;
+    margin-left: 18px;
+}
+.order-warnings li{
+    margin: 6px 0;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+/* Destaque visual no card do teste quando há inconsistência */
+.test-item.violation{
+    border: 2px solid var(--danger-color);
+    background: var(--error-bg);
+}
+.test-item.violation .test-number{
+    background: var(--danger-color);
+    color: white;
 }
 
 /* Form */

@@ -468,6 +468,87 @@ class IARTESDatabase:
             })
         
         return results
+
+    def get_test_outcome_stats(
+        self,
+        test_ids: List[str],
+        user_id: Optional[int] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Retorna estatísticas de execução/sucesso por teste.
+
+        Args:
+            test_ids: Lista de IDs de teste
+            user_id: Se informado, filtra por tester_id (estatísticas do usuário)
+
+        Returns:
+            Dict keyed por test_case_id com:
+              executions, successes, failures, success_rate, avg_time, avg_rating, last_executed
+        """
+        if not test_ids:
+            return {}
+
+        cursor = self.conn.cursor()
+        placeholders = ",".join(["?"] * len(test_ids))
+
+        if user_id is None:
+            cursor.execute(f"""
+                SELECT
+                    test_case_id,
+                    COUNT(*) as executions,
+                    SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes,
+                    SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failures,
+                    AVG(actual_execution_time) as avg_time,
+                    AVG(tester_rating) as avg_rating,
+                    MAX(executed_at) as last_executed
+                FROM feedbacks
+                WHERE test_case_id IN ({placeholders})
+                GROUP BY test_case_id
+            """, test_ids)
+        else:
+            cursor.execute(f"""
+                SELECT
+                    test_case_id,
+                    COUNT(*) as executions,
+                    SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes,
+                    SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failures,
+                    AVG(actual_execution_time) as avg_time,
+                    AVG(tester_rating) as avg_rating,
+                    MAX(executed_at) as last_executed
+                FROM feedbacks
+                WHERE tester_id = ? AND test_case_id IN ({placeholders})
+                GROUP BY test_case_id
+            """, [user_id] + test_ids)
+
+        stats: Dict[str, Dict[str, Any]] = {}
+        for row in cursor.fetchall():
+            executions = row["executions"] or 0
+            successes = row["successes"] or 0
+            failures = row["failures"] or 0
+            success_rate = (successes / executions) if executions > 0 else None
+            stats[row["test_case_id"]] = {
+                "executions": executions,
+                "successes": successes,
+                "failures": failures,
+                "success_rate": success_rate,
+                "avg_time": row["avg_time"],
+                "avg_rating": row["avg_rating"],
+                "last_executed": row["last_executed"],
+            }
+
+        return stats
+
+    def get_last_user_feedback(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Retorna o último feedback do usuário (mais recente)."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM feedbacks
+            WHERE tester_id = ?
+            ORDER BY executed_at DESC
+            LIMIT 1
+        """, (user_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
     
     def add_recommendation(self, recommendation: Dict[str, Any]) -> int:
         """
