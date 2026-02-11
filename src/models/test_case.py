@@ -63,6 +63,13 @@ class TestCase:
     last_executed: Optional[datetime] = None
     times_executed: int = 0
     
+    # Campos para estrutura hierárquica (testes compostos/incrementais)
+    validation_point_action: Optional[str] = None  # ID da ação onde este teste é validado [TEST-XXXX]
+    context_preserving: bool = False  # (*) Teste não altera contexto
+    teardown_restores: bool = False  # (**) Teste volta ao estado anterior no teardown
+    parent_test_id: Optional[str] = None  # Teste pai na hierarquia
+    child_test_ids: Set[str] = field(default_factory=set)  # Testes filhos (se este falhar, eles também falham)
+    
     def get_total_estimated_time(self) -> float:
         """Calcula tempo total estimado do teste"""
         return sum(action.estimated_time for action in self.actions)

@@ -70,6 +70,10 @@ class SimulatorExecutor:
                 failed_action_id = action.id
                 notes = f"Falha por precondições faltando: {sorted(missing)}"
                 required_reset = action.impact in (ActionImpact.DESTRUCTIVE, ActionImpact.PARTIALLY_DESTRUCTIVE)
+                
+                # Se teste tem teardown_restores, restaurar estado mesmo em falha
+                final_state = set(initial_state) if test_case.teardown_restores else set(state)
+                
                 finished_at = datetime.now()
                 result = ExecutionResult(
                     test_case_id=test_case.id,
@@ -78,12 +82,12 @@ class SimulatorExecutor:
                     actual_execution_time=max(total_time, 0.1),
                     success=False,
                     required_reset=required_reset,
-                    notes=notes,
+                    notes=notes + (" | [TEARDOWN] Estado restaurado" if test_case.teardown_restores else ""),
                     initial_state=initial_state,
-                    final_state=set(state),
+                    final_state=final_state,
                     failed_action_id=failed_action_id,
                 )
-                return result, state
+                return result, final_state
 
             # Flakiness
             flake_prob = self.config.precondition_failure_prob * (2.0 if corrupted else 1.0)
@@ -91,6 +95,10 @@ class SimulatorExecutor:
                 failed_action_id = action.id
                 notes = "Falha simulada (flaky) durante execução da ação"
                 required_reset = True
+                
+                # Se teste tem teardown_restores, restaurar estado mesmo em falha
+                final_state = set(initial_state) if test_case.teardown_restores else set(state)
+                
                 finished_at = datetime.now()
                 result = ExecutionResult(
                     test_case_id=test_case.id,
@@ -99,12 +107,12 @@ class SimulatorExecutor:
                     actual_execution_time=max(total_time + 0.2, 0.2),
                     success=False,
                     required_reset=required_reset,
-                    notes=notes,
+                    notes=notes + (" | [TEARDOWN] Estado restaurado" if test_case.teardown_restores else ""),
                     initial_state=initial_state,
-                    final_state=set(state),
+                    final_state=final_state,
                     failed_action_id=failed_action_id,
                 )
-                return result, state
+                return result, final_state
 
             # Tempo (com ruído)
             base = max(action.estimated_time, 0.1)
@@ -122,6 +130,13 @@ class SimulatorExecutor:
 
         # Sucesso
         finished_at = datetime.now()
+        
+        # Se teste tem teardown_restores, executar teardown antes de retornar
+        if test_case.teardown_restores:
+            # Em simulador, teardown = restaurar estado inicial
+            state = set(initial_state)
+            notes = (notes or "OK") + " | [TEARDOWN] Estado restaurado"
+        
         result = ExecutionResult(
             test_case_id=test_case.id,
             started_at=started_at,
@@ -131,7 +146,7 @@ class SimulatorExecutor:
             required_reset=required_reset,
             notes=notes or "OK",
             initial_state=initial_state,
-            final_state=set(state),
+            final_state=set(state),  # Se teardown_restores, state = initial_state
             failed_action_id=None,
         )
         return result, state

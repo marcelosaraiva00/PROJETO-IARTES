@@ -208,6 +208,9 @@
 
                     <div class="filter-bar">
                         <input type="text" id="searchTestsSelect" placeholder="🔍 Buscar testes..." class="search-input">
+                        <select id="filterCategorySelect" class="filter-select">
+                            <option value="">Todas as Categorias</option>
+                        </select>
                         <select id="filterModuleSelect" class="filter-select">
                             <option value="">Todos os Módulos</option>
                         </select>
@@ -215,6 +218,12 @@
                         <button class="btn btn-secondary" onclick="limparSelecao()">❌ Limpar Seleção</button>
                     </div>
 
+                    <!-- Visualização por Categorias -->
+                    <div id="testSelectionByCategory" style="display: none;">
+                        <!-- Categorias serão renderizadas aqui -->
+                    </div>
+
+                    <!-- Visualização em Grid (fallback) -->
                     <div class="test-selection-grid" id="testSelectionGrid">
                         <div class="loading">Carregando testes...</div>
                     </div>

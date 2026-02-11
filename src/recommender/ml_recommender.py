@@ -109,6 +109,43 @@ class MLTestRecommender:
             if test_order[i].module == test_order[i + 1].module:
                 score += 3
         
+        # Bônus por hierarquia (NOVO)
+        try:
+            from src.utils.hierarchy_utils import (
+                get_tree_level, group_tests_by_shared_path, 
+                calculate_hierarchy_score
+            )
+            test_by_id = {tc.id: tc for tc in test_order}
+            
+            # Bônus por agrupamento de testes com caminho compartilhado
+            groups = group_tests_by_shared_path(test_order)
+            score += len(groups) * 15
+            
+            # Bônus por agrupar testes context_preserving
+            context_preserving_groups = 0
+            i = 0
+            while i < len(test_order):
+                if test_order[i].context_preserving:
+                    group_start = i
+                    while i < len(test_order) and test_order[i].context_preserving:
+                        i += 1
+                    if i - group_start > 1:
+                        context_preserving_groups += 1
+                else:
+                    i += 1
+            score += context_preserving_groups * 10
+            
+            # Penalizar violações de hierarquia
+            hierarchy_violations = 0
+            executed = set()
+            for tc in test_order:
+                if tc.parent_test_id and tc.parent_test_id not in executed:
+                    hierarchy_violations += 1
+                executed.add(tc.id)
+            score -= hierarchy_violations * 25
+        except ImportError:
+            pass  # Se hierarchy_utils não estiver disponível, ignorar
+        
         # Incorporar feedback humano se disponível
         if feedback:
             if feedback.success:
@@ -180,6 +217,44 @@ class MLTestRecommender:
             compatible_transitions,
             same_module_transitions,
         ])
+        
+        # Features hierárquicas (NOVO)
+        test_by_id = {tc.id: tc for tc in test_order}
+        try:
+            from src.utils.hierarchy_utils import get_tree_level, group_tests_by_shared_path
+            
+            # Nível médio na árvore
+            tree_levels = [get_tree_level(tc, test_by_id) for tc in test_order]
+            avg_tree_level = np.mean(tree_levels) if tree_levels else 0.0
+            
+            # Número de grupos por caminho compartilhado
+            groups = group_tests_by_shared_path(test_order)
+            num_shared_path_groups = len(groups)
+            
+            # Número de testes que preservam contexto
+            num_context_preserving = sum(1 for tc in test_order if tc.context_preserving)
+            
+            # Número de testes com teardown
+            num_teardown = sum(1 for tc in test_order if tc.teardown_restores)
+            
+            # Violações de hierarquia (filho antes de pai)
+            hierarchy_violations = 0
+            executed = set()
+            for tc in test_order:
+                if tc.parent_test_id and tc.parent_test_id not in executed:
+                    hierarchy_violations += 1
+                executed.add(tc.id)
+            
+            features.extend([
+                avg_tree_level,
+                num_shared_path_groups,
+                num_context_preserving,
+                num_teardown,
+                hierarchy_violations,
+            ])
+        except ImportError:
+            # Se hierarchy_utils não estiver disponível, usar zeros
+            features.extend([0.0, 0.0, 0.0, 0.0, 0.0])
         
         return np.array(features, dtype=np.float32), score
     

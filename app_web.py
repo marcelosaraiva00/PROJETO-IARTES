@@ -25,10 +25,23 @@ from src.recommender.anomaly_detector import AnomalyDetector
 from src.utils.database import get_database
 from src.utils.notification_manager import NotificationManager
 from src.utils.report_generator import ReportGenerator
+from src.utils.hierarchy_utils import (
+    order_by_hierarchy, group_tests_by_shared_path,
+    estimate_resets_with_hierarchy, calculate_hierarchy_score,
+    get_tree_level
+)
 from testes_motorola import criar_testes_motorola
+from testes_dialer_importados import criar_testes_dialer
+from testes_motorola_melhorados import criar_testes_motorola as criar_testes_motorola_melhorados
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)  # Chave secreta para sessões
+
+# Configurar sessão permanente com timeout longo
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)  # Sessão válida por 24 horas
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = False  # True apenas em HTTPS
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 # Configurações de upload
 UPLOAD_FOLDER = Path('static/uploads/profiles')
@@ -39,8 +52,10 @@ MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Estado global
-testes = criar_testes_motorola()
+# Estado global - Usar testes melhorados + Dialer
+testes_motorola = criar_testes_motorola_melhorados()
+testes_dialer = criar_testes_dialer()
+testes = testes_motorola + testes_dialer
 recommender = PersonalizedMLRecommender()  # NOVO: Recomendador personalizado
 db = get_database("iartes.db")  # Banco de dados SQLite
 
@@ -422,6 +437,117 @@ def _contextual_reorder(
 
     return ordered
 
+def _hierarchical_reorder(
+    test_cases: List[TestCase],
+    base_order_ids: List[str],
+    risk_map: Dict[str, float],
+    affinity_map: Dict[str, float]
+) -> List[TestCase]:
+    """
+    Reordena testes usando estrutura hierárquica quando disponível.
+    Considera: parent_test_id, child_test_ids, context_preserving, teardown_restores.
+    Agrupa testes por caminho compartilhado e otimiza ordem dentro dos grupos.
+    """
+    if not test_cases:
+        return []
+    
+    test_by_id = {tc.id: tc for tc in test_cases}
+    base_rank = {tid: idx for idx, tid in enumerate(base_order_ids)}
+    
+    # Verificar se há hierarquia
+    has_hierarchy = any(
+        tc.parent_test_id or tc.child_test_ids or 
+        tc.context_preserving or tc.teardown_restores
+        for tc in test_cases
+    )
+    
+    if not has_hierarchy:
+        # Sem hierarquia: usar ordenação contextual normal
+        return _contextual_reorder(test_cases, base_order_ids, risk_map, affinity_map)
+    
+    # Agrupar testes por caminho compartilhado
+    groups = group_tests_by_shared_path(test_cases)
+    
+    # Ordenar grupos por nível hierárquico (raiz primeiro)
+    def get_group_level(group: List[TestCase]) -> int:
+        """Retorna o nível mínimo do grupo (raiz = 0)."""
+        if not group:
+            return 999
+        levels = [get_tree_level(tc, test_by_id) for tc in group]
+        return min(levels)
+    
+    # Ordenar grupos por nível (raiz primeiro)
+    groups.sort(key=get_group_level)
+    
+    # Construir ordem final respeitando hierarquia e agrupamentos
+    executed_ids = set()
+    final_order = []
+    
+    for group in groups:
+        # Dentro de cada grupo, ordenar por:
+        # 1. Nível hierárquico (raiz primeiro)
+        # 2. Risco de falha (alto primeiro - para detectar problemas cedo)
+        # 3. Contexto/afinidade (alto primeiro)
+        # 4. Prioridade (alta primeiro)
+        # 5. Ordem base (preservar tendência do modelo)
+        
+        def score_test(tc: TestCase) -> tuple:
+            level = get_tree_level(tc, test_by_id)
+            risk = risk_map.get(tc.id, 0.0)
+            affinity = affinity_map.get(tc.id, 0.0)
+            priority = tc.priority
+            base_pos = base_rank.get(tc.id, 9999)
+            
+            return (
+                level,                    # Nível hierárquico (raiz primeiro)
+                -risk,                    # Risco (alto primeiro)
+                -affinity,                # Afinidade (alta primeiro)
+                -priority,                # Prioridade (alta primeiro)
+                base_pos                  # Ordem base (preservar tendência)
+            )
+        
+        # Filtrar testes do grupo que podem ser executados (pai já executado)
+        executable_in_group = []
+        for tc in group:
+            if tc.id in executed_ids:
+                continue
+            
+            # Verificar se pai foi executado (se tem pai)
+            if tc.parent_test_id:
+                if tc.parent_test_id not in executed_ids:
+                    # Pai não foi executado ainda, pular por enquanto
+                    continue
+            
+            executable_in_group.append(tc)
+        
+        # Ordenar testes executáveis do grupo
+        executable_in_group.sort(key=score_test)
+        
+        # Adicionar testes do grupo na ordem otimizada
+        for tc in executable_in_group:
+            final_order.append(tc)
+            executed_ids.add(tc.id)
+            
+            # Se é context_preserving, tentar agrupar com outros context_preserving do mesmo grupo
+            if tc.context_preserving:
+                for other_tc in group:
+                    if (other_tc.id not in executed_ids and 
+                        other_tc.context_preserving and
+                        other_tc.parent_test_id == tc.parent_test_id):
+                        final_order.append(other_tc)
+                        executed_ids.add(other_tc.id)
+    
+    # Adicionar testes restantes que não foram agrupados (sem hierarquia explícita)
+    for tc in test_cases:
+        if tc.id not in executed_ids:
+            # Verificar se pode executar (pai já executado)
+            if tc.parent_test_id and tc.parent_test_id not in executed_ids:
+                continue  # Ainda não pode executar
+            final_order.append(tc)
+            executed_ids.add(tc.id)
+    
+    return final_order
+
 def _repair_order_for_logic(test_cases: List[TestCase], order_ids: List[str]) -> List[str]:
     """
     "Repair" de ordem para garantir consistência lógica:
@@ -529,6 +655,11 @@ def login_required(f):
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session:
             return jsonify({'error': 'Login necessário', 'redirect': '/login'}), 401
+        
+        # Renovar sessão a cada requisição autenticada (keep-alive)
+        session.permanent = True
+        session.modified = True  # Marcar sessão como modificada para renovar timeout
+        
         return f(*args, **kwargs)
     return decorated_function
 
@@ -569,7 +700,8 @@ def login():
     if not user or not verify_password(password, user['password_hash']):
         return jsonify({'error': 'Usuário ou senha incorretos'}), 401
     
-    # Criar sessão
+    # Criar sessão permanente
+    session.permanent = True  # Tornar sessão permanente
     session['user_id'] = user['id']
     session['username'] = user['username']
     session['full_name'] = user.get('full_name') or user['username']
@@ -616,6 +748,7 @@ def register():
                                 experience_level=experience_level)
         
         # Login automático após registro
+        session.permanent = True  # Tornar sessão permanente
         session['user_id'] = user_id
         session['username'] = username
         session['full_name'] = full_name or username
@@ -651,6 +784,10 @@ def get_current_user():
     if not user:
         session.clear()
         return jsonify({'authenticated': False}), 401
+    
+    # Renovar sessão a cada verificação (keep-alive)
+    session.permanent = True
+    session.modified = True  # Marcar sessão como modificada para renovar timeout
     
     return jsonify({
         'authenticated': True,
@@ -997,13 +1134,37 @@ def get_recomendacao():
         affinity_map = ctx["affinity_map"]
         context_info = ctx["context"]
 
-        reordered_tests = _contextual_reorder(
-            testes_selecionados,
-            recomendacao.recommended_order,
-            risk_map=risk_map,
-            affinity_map=affinity_map,
-            initial_module=context_info.get("last_module")
+        # Verificar se há hierarquia
+        has_hierarchy = any(
+            tc.parent_test_id or tc.child_test_ids or 
+            tc.context_preserving or tc.teardown_restores
+            for tc in testes_selecionados
         )
+
+        if has_hierarchy:
+            # Usar ordenação hierárquica
+            reordered_tests = _hierarchical_reorder(
+                testes_selecionados,
+                recomendacao.recommended_order,
+                risk_map=risk_map,
+                affinity_map=affinity_map
+            )
+            # Calcular resets com hierarquia
+            recomendacao.estimated_resets = estimate_resets_with_hierarchy(reordered_tests)
+            # Calcular score hierárquico
+            hierarchy_score = calculate_hierarchy_score(reordered_tests)
+            recomendacao.reasoning["hierarchical_ordering"] = True
+            recomendacao.reasoning["hierarchy_score"] = hierarchy_score
+        else:
+            # Usar ordenação contextual normal
+            reordered_tests = _contextual_reorder(
+                testes_selecionados,
+                recomendacao.recommended_order,
+                risk_map=risk_map,
+                affinity_map=affinity_map,
+                initial_module=context_info.get("last_module")
+            )
+            recomendacao.estimated_resets = _estimate_resets_from_order(reordered_tests)
 
         # Atualizar recomendação final
         raw_ids = [t.id for t in reordered_tests]
@@ -1013,7 +1174,8 @@ def get_recomendacao():
 
         fixed_tests = [all_tests_map[tid] for tid in fixed_ids if tid in all_tests_map]
         recomendacao.estimated_total_time = sum(t.get_total_estimated_time() for t in fixed_tests)
-        recomendacao.estimated_resets = _estimate_resets_from_order(fixed_tests)
+        if not has_hierarchy:
+            recomendacao.estimated_resets = _estimate_resets_from_order(fixed_tests)
         recomendacao.reasoning["contextual_enabled"] = True
         recomendacao.reasoning["failure_prediction_enabled"] = True
         recomendacao.reasoning["context"] = context_info
@@ -1025,13 +1187,13 @@ def get_recomendacao():
         risk_map = {}
         context_info = {}
     
-    # Detalhes de cada teste na ordem recomendada (inclui risco de falha)
+    # Detalhes de cada teste na ordem recomendada (inclui risco de falha e info hierárquica)
     ordem_detalhada = []
     for test_id in recomendacao.recommended_order:
         tc = next((t for t in testes_selecionados if t.id == test_id), None)
         if tc:
             composition = tc.get_impact_composition()
-            ordem_detalhada.append({
+            test_detail = {
                 'id': tc.id,
                 'name': tc.name,
                 'module': tc.module,
@@ -1041,7 +1203,19 @@ def get_recomendacao():
                 'impact_level': tc.get_impact_level(),
                 'impact_composition': composition,
                 'failure_risk': float(risk_map.get(tc.id, 0.0))  # NOVO: predição de falha (0..1)
-            })
+            }
+            # Adicionar informações hierárquicas se disponíveis
+            if hasattr(tc, 'parent_test_id') and tc.parent_test_id:
+                test_detail['parent_test_id'] = tc.parent_test_id
+            if hasattr(tc, 'child_test_ids') and tc.child_test_ids:
+                test_detail['child_test_ids'] = list(tc.child_test_ids)
+            if hasattr(tc, 'context_preserving'):
+                test_detail['context_preserving'] = tc.context_preserving
+            if hasattr(tc, 'teardown_restores'):
+                test_detail['teardown_restores'] = tc.teardown_restores
+            if hasattr(tc, 'validation_point_action') and tc.validation_point_action:
+                test_detail['validation_point_action'] = tc.validation_point_action
+            ordem_detalhada.append(test_detail)
     
     # Gerar explicação da recomendação
     explanation = None

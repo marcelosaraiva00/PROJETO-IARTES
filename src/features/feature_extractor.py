@@ -45,6 +45,14 @@ class FeatureExtractor:
             # Features temporais
             'avg_action_time',
             'time_since_last_execution',
+            
+            # Features hierárquicas (NOVO)
+            'tree_level',
+            'num_ancestors',
+            'num_descendants',
+            'context_preserving',
+            'teardown_restores',
+            'has_validation_point',
         ]
     
     def extract_features(self, test_case: TestCase) -> np.ndarray:
@@ -120,6 +128,28 @@ class FeatureExtractor:
         else:
             days_since = 999  # Valor alto para testes nunca executados
         features.append(days_since)
+        
+        # Features hierárquicas (NOVO)
+        # tree_level: será calculado externamente (requer test_by_id)
+        # Por enquanto, usar 0 se não houver parent, 1 se houver
+        tree_level = 1.0 if test_case.parent_test_id else 0.0
+        features.append(tree_level)
+        
+        # num_ancestors: número de ancestrais (simplificado - apenas se tem parent)
+        num_ancestors = 1.0 if test_case.parent_test_id else 0.0
+        features.append(num_ancestors)
+        
+        # num_descendants: número de descendentes
+        features.append(float(len(test_case.child_test_ids)))
+        
+        # context_preserving: boolean
+        features.append(1.0 if test_case.context_preserving else 0.0)
+        
+        # teardown_restores: boolean
+        features.append(1.0 if test_case.teardown_restores else 0.0)
+        
+        # has_validation_point: boolean
+        features.append(1.0 if test_case.validation_point_action else 0.0)
         
         return np.array(features, dtype=np.float32)
     

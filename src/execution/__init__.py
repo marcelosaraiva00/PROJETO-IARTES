@@ -7,3 +7,5 @@ Objetivo:
 - Gerar ExecutionFeedback automaticamente para o ML aprender
 """
 
+from src.execution.hierarchical_executor import HierarchicalExecutor, HierarchicalExecutionResult
+

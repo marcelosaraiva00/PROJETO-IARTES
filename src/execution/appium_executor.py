@@ -304,9 +304,30 @@ class AndroidAppiumExecutor:
             if not ok:
                 failed_action_id = action.id
                 required_reset = True
+                
+                # Se teste tem teardown_restores, executar teardown mesmo em falha
+                if test_case.teardown_restores:
+                    try:
+                        self._back(times=1)
+                        notes.append("[TEARDOWN] Voltou para tela anterior")
+                        state = set(initial_state)
+                    except Exception as e:
+                        notes.append(f"[TEARDOWN] Erro: {str(e)}")
+                
                 break
 
         finished_at = datetime.now()
+        
+        # Se teste tem teardown_restores, executar teardown antes de retornar
+        if test_case.teardown_restores:
+            try:
+                self._back(times=1)  # Voltar uma tela
+                notes.append("[TEARDOWN] Voltou para tela anterior")
+                # Estado volta ao inicial (não altera estado final)
+                state = set(initial_state)
+            except Exception as e:
+                notes.append(f"[TEARDOWN] Erro: {str(e)}")
+        
         result = ExecutionResult(
             test_case_id=test_case.id,
             started_at=started_at,
@@ -316,7 +337,7 @@ class AndroidAppiumExecutor:
             required_reset=required_reset,
             notes=" | ".join([n for n in notes if n])[:1000],
             initial_state=initial_state,
-            final_state=set(state),
+            final_state=set(state),  # Se teardown_restores, state = initial_state
             failed_action_id=failed_action_id,
         )
         return result, state

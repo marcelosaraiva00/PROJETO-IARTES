@@ -86,10 +86,23 @@ function displayUserInfo(user) {
     loadUnreadCount();
     // Atualizar contagem a cada 30 segundos
     setInterval(loadUnreadCount, 30000);
+    
+    // Renovar sessão periodicamente (keep-alive) a cada 5 minutos
+    // Isso evita que a sessão expire durante uso ativo
+    setInterval(async () => {
+        try {
+            await fetch('/api/user/current');
+        } catch (error) {
+            console.error('Erro ao renovar sessão:', error);
+        }
+    }, 5 * 60 * 1000);  // 5 minutos
 }
 
 function redirectToLogin() {
-    window.location.href = '/login';
+    // Evitar múltiplos redirecionamentos
+    if (window.location.pathname !== '/login') {
+        window.location.href = '/login';
+    }
 }
 
 async function logout() {
@@ -113,17 +126,56 @@ async function logout() {
 
 // Interceptar requisições para tratar erros 401
 const originalFetch = window.fetch;
+let isRedirecting = false;  // Flag para evitar múltiplos redirecionamentos
+
 window.fetch = async function(...args) {
-    const response = await originalFetch(...args);
-    if (response.status === 401) {
-        const data = await response.json();
-        if (data.redirect) {
-            window.location.href = data.redirect;
-        } else {
-            redirectToLogin();
+    try {
+        const response = await originalFetch(...args);
+        
+        // Tratar erro 401 apenas se não for uma requisição de verificação de autenticação
+        // Evitar loop infinito de redirecionamentos
+        if (response.status === 401 && !isRedirecting) {
+            const url = args[0];
+            const urlString = typeof url === 'string' ? url : (url?.url || '');
+            
+            // Não redirecionar se for a própria verificação de autenticação
+            if (urlString.includes('/api/user/current')) {
+                // Sessão expirada, redirecionar para login
+                isRedirecting = true;
+                redirectToLogin();
+                return response;
+            }
+            
+            // Para outras requisições, verificar se realmente é sessão expirada
+            try {
+                const authCheck = await originalFetch('/api/user/current', {
+                    method: 'GET',
+                    credentials: 'include'
+                });
+                
+                if (!authCheck.ok) {
+                    // Sessão realmente expirada
+                    const authData = await authCheck.json().catch(() => ({}));
+                    if (authData.redirect || !authData.authenticated) {
+                        isRedirecting = true;
+                        redirectToLogin();
+                        return response;
+                    }
+                }
+                // Sessão ainda válida, pode ser erro específico da requisição
+                // Não redirecionar, apenas retornar o erro
+            } catch (error) {
+                // Erro na verificação, pode ser problema de rede
+                // Não redirecionar imediatamente, apenas logar
+                console.warn('Erro ao verificar autenticação:', error);
+            }
         }
+        return response;
+    } catch (error) {
+        // Erro de rede, não redirecionar
+        console.error('Erro na requisição:', error);
+        throw error;
     }
-    return response;
 };
 
 // ==================== ESTATÍSTICAS PESSOAIS ====================
@@ -857,10 +909,91 @@ async function loadTests() {
     }
 }
 
+// Função para determinar categoria de um teste
+function getTestCategory(test) {
+    // Categorias especiais baseadas em tags
+    if (test.tags) {
+        let tags = [];
+        if (Array.isArray(test.tags)) {
+            tags = test.tags.map(t => String(t).toLowerCase());
+        } else if (typeof test.tags === 'string') {
+            tags = [test.tags.toLowerCase()];
+        } else if (typeof test.tags === 'object') {
+            // Se for um objeto Set ou similar, converter para array
+            tags = Array.from(test.tags).map(t => String(t).toLowerCase());
+        }
+        
+        if (tags.includes('dialer') || tags.includes('imported')) {
+            return 'Dialer';
+        }
+    }
+    
+    // Categorias baseadas em módulo
+    const moduleCategoryMap = {
+        'Telephony': 'Telefonia',
+        'Camera': 'Câmera',
+        'Connectivity': 'Conectividade',
+        'Battery': 'Bateria',
+        'Security': 'Segurança',
+        'System Settings': 'Configurações do Sistema',
+        'Setup': 'Configuração Inicial',
+        'Video Calls': 'Chamadas de Vídeo',
+        'Conference Calls': 'Chamadas em Conferência',
+        'SMS': 'Mensagens',
+        'Audio': 'Áudio',
+        'Display': 'Tela',
+        'Performance': 'Performance',
+        'Storage': 'Armazenamento',
+        'Gestures': 'Gestos',
+        'Apps': 'Aplicativos',
+        'Notifications': 'Notificações',
+        'GPS': 'Localização',
+        'Sensors': 'Sensores',
+        'Accessibility': 'Acessibilidade'
+    };
+    
+    const module = test.module || '';
+    return moduleCategoryMap[module] || module || 'Outros';
+}
+
+// Agrupar testes por categoria
+function groupTestsByCategory(tests) {
+    const categories = {};
+    
+    tests.forEach(test => {
+        const category = getTestCategory(test);
+        if (!categories[category]) {
+            categories[category] = [];
+        }
+        categories[category].push(test);
+    });
+    
+    // Ordenar categorias (Dialer primeiro, depois Setup, depois alfabético)
+    const categoryOrder = ['Dialer', 'Configuração Inicial', 'Telefonia', 'Câmera', 'Conectividade'];
+    const sortedCategories = {};
+    
+    // Adicionar categorias na ordem preferida
+    categoryOrder.forEach(cat => {
+        if (categories[cat]) {
+            sortedCategories[cat] = categories[cat];
+            delete categories[cat];
+        }
+    });
+    
+    // Adicionar resto em ordem alfabética
+    Object.keys(categories).sort().forEach(cat => {
+        sortedCategories[cat] = categories[cat];
+    });
+    
+    return sortedCategories;
+}
+
 // Carregar testes para seleção (Etapa 1)
 async function loadTestSelection() {
     const container = document.getElementById('testSelectionGrid');
+    const categoryContainer = document.getElementById('testSelectionByCategory');
     const moduleFilter = document.getElementById('filterModuleSelect');
+    const categoryFilter = document.getElementById('filterCategorySelect');
     const searchInput = document.getElementById('searchTestsSelect');
     
     // Garantir que allTests é um array
@@ -869,6 +1002,20 @@ async function loadTestSelection() {
             container.innerHTML = '<div class="loading">Carregando testes...</div>';
         }
         return;
+    }
+    
+    // Agrupar por categoria
+    const categories = groupTestsByCategory(allTests);
+    
+    // Popular filtro de categorias
+    if (categoryFilter) {
+        categoryFilter.innerHTML = '<option value="">Todas as Categorias</option>';
+        Object.keys(categories).forEach(category => {
+            const option = document.createElement('option');
+            option.value = category;
+            option.textContent = `${category} (${categories[category].length})`;
+            categoryFilter.appendChild(option);
+        });
     }
     
     // Popular filtro de módulos
@@ -887,24 +1034,147 @@ async function loadTestSelection() {
     const filterTests = () => {
         const searchTerm = searchInput.value.toLowerCase();
         const moduleValue = moduleFilter.value;
+        const categoryValue = categoryFilter.value;
         
         const filtered = allTests.filter(test => {
             const matchesSearch = !searchTerm || 
                 test.name.toLowerCase().includes(searchTerm) ||
                 test.id.toLowerCase().includes(searchTerm);
             const matchesModule = !moduleValue || test.module === moduleValue;
-            return matchesSearch && matchesModule;
+            const matchesCategory = !categoryValue || getTestCategory(test) === categoryValue;
+            return matchesSearch && matchesModule && matchesCategory;
         });
         
-        renderTestSelection(filtered);
+        // Se há filtro de categoria ou busca, usar grid simples
+        // Senão, usar visualização por categorias
+        if (categoryValue || searchTerm || moduleValue) {
+            container.style.display = 'grid';
+            categoryContainer.style.display = 'none';
+            renderTestSelection(filtered);
+        } else {
+            container.style.display = 'none';
+            categoryContainer.style.display = 'block';
+            renderTestSelectionByCategory(categories);
+        }
     };
     
     // Event listeners
     searchInput.addEventListener('input', filterTests);
     moduleFilter.addEventListener('change', filterTests);
+    categoryFilter.addEventListener('change', filterTests);
     
-    // Renderizar inicial
-    renderTestSelection(allTests);
+    // Renderizar inicial (por categorias)
+    container.style.display = 'none';
+    categoryContainer.style.display = 'block';
+    renderTestSelectionByCategory(categories);
+}
+
+// Renderizar testes agrupados por categoria
+function renderTestSelectionByCategory(categories) {
+    const container = document.getElementById('testSelectionByCategory');
+    container.innerHTML = '';
+    
+    const categoryKeys = Object.keys(categories);
+    const categoriesToExpand = new Set(['Dialer', 'Configuração Inicial']); // Categorias que devem expandir por padrão
+    
+    categoryKeys.forEach((category, index) => {
+        const categoryTests = categories[category];
+        const categoryId = `category-${category.replace(/\s+/g, '-').toLowerCase()}`;
+        
+        // Contar selecionados na categoria
+        const selectedInCategory = categoryTests.filter(t => selectedTests.includes(t.id)).length;
+        const isAllSelected = selectedInCategory === categoryTests.length;
+        const isSomeSelected = selectedInCategory > 0 && selectedInCategory < categoryTests.length;
+        
+        // Expandir se: categoria importante, tem selecionados, ou é a primeira
+        const shouldExpand = categoriesToExpand.has(category) || selectedInCategory > 0 || index === 0;
+        
+        const categoryDiv = document.createElement('div');
+        categoryDiv.className = 'test-category-section';
+        categoryDiv.innerHTML = `
+            <div class="category-header" onclick="toggleCategory('${categoryId}')">
+                <div class="category-info">
+                    <span class="category-icon">${isAllSelected ? '✅' : isSomeSelected ? '☑️' : '📁'}</span>
+                    <h3 class="category-title">${category}</h3>
+                    <span class="category-count">${categoryTests.length} testes</span>
+                    ${selectedInCategory > 0 ? `<span class="category-selected">(${selectedInCategory} selecionados)</span>` : ''}
+                </div>
+                <div class="category-actions">
+                    <button class="btn-category-select" onclick="event.stopPropagation(); selectCategory('${category}', true);">
+                        ✅ Selecionar Todos
+                    </button>
+                    <button class="btn-category-select" onclick="event.stopPropagation(); selectCategory('${category}', false);">
+                        ❌ Desmarcar Todos
+                    </button>
+                    <span class="category-toggle">${shouldExpand ? '▲' : '▼'}</span>
+                </div>
+            </div>
+            <div class="category-content" id="${categoryId}" style="display: ${shouldExpand ? 'block' : 'none'};">
+                <div class="test-selection-grid">
+                    <!-- Testes serão inseridos aqui -->
+                </div>
+            </div>
+        `;
+        
+        container.appendChild(categoryDiv);
+        
+        // Renderizar testes da categoria
+        const categoryContent = categoryDiv.querySelector('.test-selection-grid');
+        categoryTests.forEach(test => {
+            const isSelected = selectedTests.includes(test.id);
+            const card = document.createElement('div');
+            card.className = `test-select-card ${isSelected ? 'selected' : ''}`;
+            card.onclick = () => toggleTestSelection(test.id);
+            card.innerHTML = `
+                <div class="test-select-checkbox">${isSelected ? '✅' : '⬜'}</div>
+                <div class="test-card-header">
+                    <div class="test-card-id">${test.id}</div>
+                    <div class="test-card-title">${test.name}</div>
+                </div>
+                <div class="test-card-footer">
+                    <span class="test-badge badge-module">📦 ${test.module}</span>
+                    <span class="test-badge badge-priority">🎯 P${test.priority}</span>
+                    <span class="test-badge badge-time">⏱️ ${test.estimated_time.toFixed(0)}s</span>
+                </div>
+            `;
+            categoryContent.appendChild(card);
+        });
+    });
+    
+    updateSelectionSummary();
+}
+
+// Toggle categoria (expandir/colapsar)
+function toggleCategory(categoryId) {
+    const content = document.getElementById(categoryId);
+    const header = content.previousElementSibling;
+    const toggle = header.querySelector('.category-toggle');
+    
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        toggle.textContent = '▲';
+    } else {
+        content.style.display = 'none';
+        toggle.textContent = '▼';
+    }
+}
+
+// Selecionar/deselecionar todos os testes de uma categoria
+function selectCategory(category, select) {
+    const categoryTests = allTests.filter(t => getTestCategory(t) === category);
+    
+    categoryTests.forEach(test => {
+        const index = selectedTests.indexOf(test.id);
+        if (select && index === -1) {
+            selectedTests.push(test.id);
+        } else if (!select && index > -1) {
+            selectedTests.splice(index, 1);
+        }
+    });
+    
+    // Re-renderizar
+    const categories = groupTestsByCategory(allTests);
+    renderTestSelectionByCategory(categories);
 }
 
 function renderTestSelection(tests) {
@@ -945,18 +1215,33 @@ function toggleTestSelection(testId) {
     // Re-renderizar para atualizar visual
     const searchInput = document.getElementById('searchTestsSelect');
     const moduleFilter = document.getElementById('filterModuleSelect');
+    const categoryFilter = document.getElementById('filterCategorySelect');
     const searchTerm = searchInput.value.toLowerCase();
     const moduleValue = moduleFilter.value;
+    const categoryValue = categoryFilter.value;
     
     const filtered = allTests.filter(test => {
         const matchesSearch = !searchTerm || 
             test.name.toLowerCase().includes(searchTerm) ||
             test.id.toLowerCase().includes(searchTerm);
         const matchesModule = !moduleValue || test.module === moduleValue;
-        return matchesSearch && matchesModule;
+        const matchesCategory = !categoryValue || getTestCategory(test) === categoryValue;
+        return matchesSearch && matchesModule && matchesCategory;
     });
     
-    renderTestSelection(filtered);
+    const categories = groupTestsByCategory(allTests);
+    const categoryContainer = document.getElementById('testSelectionByCategory');
+    const container = document.getElementById('testSelectionGrid');
+    
+    if (categoryValue || searchTerm || moduleValue) {
+        container.style.display = 'grid';
+        categoryContainer.style.display = 'none';
+        renderTestSelection(filtered);
+    } else {
+        container.style.display = 'none';
+        categoryContainer.style.display = 'block';
+        renderTestSelectionByCategory(categories);
+    }
 }
 
 function updateSelectionSummary() {
@@ -988,15 +1273,18 @@ function updateSelectionSummary() {
 function selecionarTodos() {
     const searchInput = document.getElementById('searchTestsSelect');
     const moduleFilter = document.getElementById('filterModuleSelect');
+    const categoryFilter = document.getElementById('filterCategorySelect');
     const searchTerm = searchInput.value.toLowerCase();
     const moduleValue = moduleFilter.value;
+    const categoryValue = categoryFilter.value;
     
     const filtered = allTests.filter(test => {
         const matchesSearch = !searchTerm || 
             test.name.toLowerCase().includes(searchTerm) ||
             test.id.toLowerCase().includes(searchTerm);
         const matchesModule = !moduleValue || test.module === moduleValue;
-        return matchesSearch && matchesModule;
+        const matchesCategory = !categoryValue || getTestCategory(test) === categoryValue;
+        return matchesSearch && matchesModule && matchesCategory;
     });
     
     filtered.forEach(test => {
@@ -1005,25 +1293,53 @@ function selecionarTodos() {
         }
     });
     
-    renderTestSelection(filtered);
+    // Re-renderizar
+    const categories = groupTestsByCategory(allTests);
+    const categoryContainer = document.getElementById('testSelectionByCategory');
+    const container = document.getElementById('testSelectionGrid');
+    
+    if (categoryValue || searchTerm || moduleValue) {
+        container.style.display = 'grid';
+        categoryContainer.style.display = 'none';
+        renderTestSelection(filtered);
+    } else {
+        container.style.display = 'none';
+        categoryContainer.style.display = 'block';
+        renderTestSelectionByCategory(categories);
+    }
 }
 
 function limparSelecao() {
     selectedTests = [];
     const searchInput = document.getElementById('searchTestsSelect');
     const moduleFilter = document.getElementById('filterModuleSelect');
+    const categoryFilter = document.getElementById('filterCategorySelect');
     const searchTerm = searchInput.value.toLowerCase();
     const moduleValue = moduleFilter.value;
+    const categoryValue = categoryFilter.value;
     
     const filtered = allTests.filter(test => {
         const matchesSearch = !searchTerm || 
             test.name.toLowerCase().includes(searchTerm) ||
             test.id.toLowerCase().includes(searchTerm);
         const matchesModule = !moduleValue || test.module === moduleValue;
-        return matchesSearch && matchesModule;
+        const matchesCategory = !categoryValue || getTestCategory(test) === categoryValue;
+        return matchesSearch && matchesModule && matchesCategory;
     });
     
-    renderTestSelection(filtered);
+    const categories = groupTestsByCategory(allTests);
+    const categoryContainer = document.getElementById('testSelectionByCategory');
+    const container = document.getElementById('testSelectionGrid');
+    
+    if (categoryValue || searchTerm || moduleValue) {
+        container.style.display = 'grid';
+        categoryContainer.style.display = 'none';
+        renderTestSelection(filtered);
+    } else {
+        container.style.display = 'none';
+        categoryContainer.style.display = 'block';
+        renderTestSelectionByCategory(categories);
+    }
 }
 
 // Solicitar recomendação (Etapa 1 → 2)
