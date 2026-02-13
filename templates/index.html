@@ -277,21 +277,30 @@
                     <!-- Avisos (não bloqueia): dependências/pré-condições -->
                     <div id="orderWarnings" class="order-warnings" style="display:none;"></div>
 
-                    <!-- Visualização em Árvore/Grafo -->
+                    <!-- Visualização em Árvore/Grafo ou Sequência Lógica -->
                     <div id="recommendationGraphContainer" class="recommendation-graph-container" style="display: none;">
                         <div class="section-header">
                             <h3>🌳 Visualização da Ordem Recomendada</h3>
                             <div class="graph-controls">
-                                <button class="btn btn-secondary btn-sm" onclick="toggleGraphLayout()" id="toggleLayoutBtn">
+                                <select class="filter-select" id="visualizationMode" onchange="switchVisualizationMode()" style="margin-right: 8px;">
+                                    <option value="tree">🌳 Visualização em Árvore</option>
+                                    <option value="sequence">📋 Sequência Lógica Hierárquica</option>
+                                </select>
+                                <button class="btn btn-secondary btn-sm" onclick="toggleGraphLayout()" id="toggleLayoutBtn" style="display: none;">
                                     🔄 Árvore Hierárquica
                                 </button>
-                                <button class="btn btn-secondary btn-sm" onclick="resetGraphZoom()">
+                                <button class="btn btn-secondary btn-sm" onclick="resetGraphZoom()" id="resetZoomBtn" style="display: none;">
                                     🔍 Resetar Zoom
                                 </button>
                             </div>
                         </div>
+                        <!-- Visualização em Árvore (vis.js) -->
                         <div id="recommendationGraph" class="recommendation-graph"></div>
-                        <div class="graph-legend">
+                        <!-- Visualização em Sequência Lógica Hierárquica -->
+                        <div id="logicalSequenceView" class="logical-sequence-view" style="display: none;">
+                            <div class="sequence-container" id="sequenceContainer"></div>
+                        </div>
+                        <div class="graph-legend" id="graphLegend">
                             <div class="legend-item">
                                 <span class="legend-color" style="background: #10b981;"></span>
                                 <span>Próximo a executar</span>
@@ -311,6 +320,20 @@
                             <div class="legend-item">
                                 <span class="legend-line" style="border-top: 2px dashed #64748b;"></span>
                                 <span>Dependência</span>
+                            </div>
+                        </div>
+                        <div class="sequence-legend" id="sequenceLegend" style="display: none;">
+                            <div class="legend-item">
+                                <span class="legend-marker">(*)</span>
+                                <span>Teste que não altera contexto</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-marker">(**)</span>
+                                <span>Teste que restaura estado no teardown</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-marker">[TEST-XXXX]</span>
+                                <span>Ponto de validação do teste</span>
                             </div>
                         </div>
                     </div>

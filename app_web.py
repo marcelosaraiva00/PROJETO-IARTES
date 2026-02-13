@@ -33,6 +33,7 @@ from src.utils.hierarchy_utils import (
 from testes_motorola import criar_testes_motorola
 from testes_dialer_importados import criar_testes_dialer
 from testes_motorola_melhorados import criar_testes_motorola as criar_testes_motorola_melhorados
+from testes_detalhados_expandidos import criar_testes_detalhados_expandidos
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)  # Chave secreta para sessões
@@ -52,10 +53,11 @@ MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Estado global - Usar testes melhorados + Dialer
+# Estado global - Usar testes melhorados + Dialer + Testes Detalhados Expandidos
 testes_motorola = criar_testes_motorola_melhorados()
 testes_dialer = criar_testes_dialer()
-testes = testes_motorola + testes_dialer
+testes_detalhados = criar_testes_detalhados_expandidos()
+testes = testes_motorola + testes_dialer + testes_detalhados
 recommender = PersonalizedMLRecommender()  # NOVO: Recomendador personalizado
 db = get_database("iartes.db")  # Banco de dados SQLite
 
@@ -367,11 +369,25 @@ def _contextual_reorder(
             post_providers.setdefault(pc, []).append(tc.id)
 
     inferred_deps: Dict[str, set] = {tc.id: set(tc.dependencies) for tc in test_cases}
+    
+    # IMPORTANTE: Respeitar parent_test_id como dependência explícita
+    for tc in test_cases:
+        if tc.parent_test_id and tc.parent_test_id in {t.id for t in test_cases}:
+            inferred_deps[tc.id].add(tc.parent_test_id)
+    
     for tc in test_cases:
         for pre in tc.get_preconditions():
             providers = [pid for pid in post_providers.get(pre, []) if pid != tc.id]
             if not providers:
                 continue
+            
+            # Priorizar dependências explícitas: se já existe uma dependência explícita que fornece essa pré-condição,
+            # usar ela em vez de inferir outra
+            explicit_providers = [pid for pid in providers if pid in inferred_deps[tc.id]]
+            if explicit_providers:
+                # Já temos uma dependência explícita que fornece essa pré-condição, não adicionar outra
+                continue
+            
             # Escolher provedor mais "natural" pela ordem base (mais cedo no base_rank)
             best = min(providers, key=lambda pid: base_rank.get(pid, 10_000))
             inferred_deps[tc.id].add(best)
@@ -587,9 +603,13 @@ def _repair_order_for_logic(test_cases: List[TestCase], order_ids: List[str]) ->
         # dependencies explícitas
         for tid in order:
             tc = test_by_id[tid]
+            # Respeitar dependencies explícitas
             for dep in tc.dependencies:
                 if dep in test_by_id:
                     add_edge(dep, tid)
+            # IMPORTANTE: Respeitar parent_test_id como dependência explícita
+            if tc.parent_test_id and tc.parent_test_id in test_by_id:
+                add_edge(tc.parent_test_id, tid)
 
         if include_inferred:
             # inferir dependências via pré-condições: escolher provedor mais próximo ANTES na ordem atual
@@ -600,12 +620,20 @@ def _repair_order_for_logic(test_cases: List[TestCase], order_ids: List[str]) ->
                     providers = [p for p in post_providers.get(req, []) if p in pos and p != tid]
                     if not providers:
                         continue
-                    # escolher provedor mais próximo antes; se nenhum antes, escolher o mais cedo
-                    before = [p for p in providers if pos[p] < pos[tid]]
-                    if before:
-                        best = max(before, key=lambda p: pos[p])
+                    
+                    # Priorizar dependências explícitas: se já existe uma dependência explícita que fornece essa pré-condição,
+                    # usar ela em vez de inferir outra
+                    explicit_providers = [p for p in providers if p in tc.dependencies or p == tc.parent_test_id]
+                    if explicit_providers:
+                        # Usar a dependência explícita que fornece essa pré-condição
+                        best = explicit_providers[0]
                     else:
-                        best = min(providers, key=lambda p: pos[p])
+                        # escolher provedor mais próximo antes; se nenhum antes, escolher o mais cedo
+                        before = [p for p in providers if pos[p] < pos[tid]]
+                        if before:
+                            best = max(before, key=lambda p: pos[p])
+                        else:
+                            best = min(providers, key=lambda p: pos[p])
                     add_edge(best, tid)
 
         return outgoing, indeg
@@ -1152,7 +1180,8 @@ def get_recomendacao():
             # Calcular resets com hierarquia
             recomendacao.estimated_resets = estimate_resets_with_hierarchy(reordered_tests)
             # Calcular score hierárquico
-            hierarchy_score = calculate_hierarchy_score(reordered_tests)
+            test_by_id_map = {tc.id: tc for tc in testes_selecionados}
+            hierarchy_score = calculate_hierarchy_score(reordered_tests, test_by_id_map)
             recomendacao.reasoning["hierarchical_ordering"] = True
             recomendacao.reasoning["hierarchy_score"] = hierarchy_score
         else:

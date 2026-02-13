@@ -1419,8 +1419,13 @@ async function displayRecommendation(rec) {
         }
     }
     
-    // Criar visualização em árvore/grafo (isso também carrega dependências)
-    await createRecommendationGraph(rec);
+    // Criar visualização em árvore/grafo ou sequência lógica (isso também carrega dependências)
+    const visualizationMode = document.getElementById('visualizationMode')?.value || 'tree';
+    if (visualizationMode === 'tree') {
+        await createRecommendationGraph(rec);
+    } else {
+        await createLogicalSequenceView(rec);
+    }
     
     // Exibir lista de testes (drag-and-drop)
     const listContainer = document.getElementById('recommendedOrder');
@@ -1504,8 +1509,13 @@ async function updateRecommendationGraph() {
         // Validar e exibir avisos (não bloqueia)
         validateAndRenderOrderWarnings();
         
-        // Reconstruir árvore com nova ordem
-        await createRecommendationGraph(updatedRecommendation, true); // true = atualização dinâmica
+        // Reconstruir visualização com nova ordem
+        const visualizationMode = document.getElementById('visualizationMode')?.value || 'tree';
+        if (visualizationMode === 'tree') {
+            await createRecommendationGraph(updatedRecommendation, true); // true = atualização dinâmica
+        } else {
+            await createLogicalSequenceView(updatedRecommendation);
+        }
     }, 300);
 }
 
@@ -1578,9 +1588,24 @@ function validateAndRenderOrderWarnings() {
         }
 
         const missingDeps = Array.from(inferredDeps).filter(d => d && !executed.has(d) && order.includes(d));
+        
+        // Obter pós-condições que este teste cria (para excluir pré-condições que ele mesmo cria)
+        const testPosts = new Set(dep.postconditions || []);
+        
         // Só considerar como "inconsistência de ordem" se a pré-condição for interna (alguém no conjunto produz).
-        const missingPreInternal = pre.filter(p => p && postProviders.has(p) && !state.has(p));
-        const missingPreExternal = pre.filter(p => p && !postProviders.has(p) && !state.has(p));
+        // IMPORTANTE: Excluir pré-condições que o próprio teste cria como pós-condição (não é inconsistência)
+        const missingPreInternal = pre.filter(p => {
+            if (!p || !postProviders.has(p) || state.has(p)) return false;
+            // Se o próprio teste cria essa pré-condição como pós-condição, não é inconsistência
+            if (testPosts.has(p)) return false;
+            return true;
+        });
+        const missingPreExternal = pre.filter(p => {
+            if (!p || postProviders.has(p) || state.has(p)) return false;
+            // Se o próprio teste cria essa pré-condição como pós-condição, não é inconsistência
+            if (testPosts.has(p)) return false;
+            return true;
+        });
 
         if (missingDeps.length > 0 || missingPreInternal.length > 0) {
             violations[tid] = { missingDeps, missingPre: missingPreInternal, externalPre: missingPreExternal };
@@ -1691,7 +1716,10 @@ function validateAndRenderOrderWarnings() {
     // Render avisos + sugestões por item (human-friendly)
     const lines = ids.slice(0, 10).map(tid => {
         const v = violations[tid];
+        const dep = currentDependencies[tid] || {};
+        const testPosts = new Set(dep.postconditions || []);
         const parts = [];
+        
         if (v.missingDeps?.length) {
             // sugerir mover após a última dependência (pela posição na lista)
             const lastDep = [...v.missingDeps].sort((a, b) => (pos.get(b) ?? 0) - (pos.get(a) ?? 0))[0];
@@ -1701,14 +1729,35 @@ function validateAndRenderOrderWarnings() {
             // tentar achar providers das preconditions
             const providers = [];
             for (const pre of v.missingPre) {
+                // Não mostrar pré-condições que o próprio teste cria (já filtrado acima, mas garantir aqui também)
+                if (testPosts.has(pre)) continue;
+                
                 const prov = postProviders.get(pre);
-                if (prov && prov.size) providers.push(`${pre} ← ${[...prov].join('/')}`);
-                else providers.push(`${pre} ← (sem provedor nesta seleção)`);
+                if (prov && prov.size) {
+                    // Filtrar o próprio teste da lista de provedores (não faz sentido)
+                    const otherProviders = [...prov].filter(p => p !== tid);
+                    if (otherProviders.length > 0) {
+                        // Corrigir notação: mostrar que os testes PROVEDORES criam a pré-condição que este teste PRECISA
+                        // Formato: "pré-condição (fornecida por: TEST1, TEST2)"
+                        const provList = otherProviders.join(', ');
+                        providers.push(`${pre} (fornecida por: ${provList})`);
+                    } else {
+                        providers.push(`${pre} (criada pelo próprio teste, não é inconsistência)`);
+                    }
+                } else {
+                    providers.push(`${pre} (sem provedor nesta seleção)`);
+                }
             }
-            parts.push(`pré-condições: ${providers.join(' ; ')}`);
+            if (providers.length > 0) {
+                parts.push(`pré-condições faltando: ${providers.join(' ; ')}`);
+            }
         }
         if (v.externalPre?.length) {
-            parts.push(`pré-condições externas: ${v.externalPre.join(', ')} (não é inconsistência de ordem)`);
+            // Filtrar pré-condições externas que o próprio teste cria
+            const externalPreFiltered = v.externalPre.filter(pre => !testPosts.has(pre));
+            if (externalPreFiltered.length > 0) {
+                parts.push(`pré-condições externas: ${externalPreFiltered.join(', ')} (não é inconsistência de ordem)`);
+            }
         }
         return `<li><strong>${tid}</strong> — ${parts.join(' | ')}</li>`;
     });
@@ -1778,6 +1827,12 @@ async function createRecommendationGraph(rec, isUpdate = false) {
     if (typeof vis === 'undefined') {
         console.warn('vis.js não está disponível. Visualização em grafo desabilitada.');
         document.getElementById('recommendationGraphContainer').style.display = 'none';
+        return;
+    }
+    
+    // Garantir que estamos usando os dados mais recentes
+    if (!rec || !rec.details || rec.details.length === 0) {
+        console.warn('Recomendação inválida ou vazia');
         return;
     }
     
@@ -2101,11 +2156,18 @@ async function createRecommendationGraph(rec, isUpdate = false) {
             return;
         }
         
-        // Destruir grafo anterior se existir
+        // Destruir grafo anterior se existir ANTES de criar novo
         if (recommendationGraphNetwork) {
-            recommendationGraphNetwork.destroy();
+            try {
+                recommendationGraphNetwork.destroy();
+            } catch (e) {
+                console.warn('Erro ao destruir grafo anterior:', e);
+            }
             recommendationGraphNetwork = null;
         }
+        
+        // Limpar container antes de criar novo grafo
+        container.innerHTML = '';
         
         // Configuração do grafo
         const data = {
@@ -2137,7 +2199,7 @@ async function createRecommendationGraph(rec, isUpdate = false) {
                     maximum: 160
                 },
                 heightConstraint: {
-                    maximum: 80
+                    minimum: 50
                 },
                 chosen: {
                     node: function(values, id, selected, hovering) {
@@ -2167,7 +2229,7 @@ async function createRecommendationGraph(rec, isUpdate = false) {
             }
         };
         
-        // Criar rede
+        // Criar rede (grafo anterior já foi destruído acima)
         recommendationGraphNetwork = new vis.Network(container, data, options);
         
         // Event listeners
@@ -2215,6 +2277,52 @@ async function createRecommendationGraph(rec, isUpdate = false) {
     }
 }
 
+// Alternar entre visualização em árvore e sequência lógica
+async function switchVisualizationMode() {
+    const mode = document.getElementById('visualizationMode').value;
+    const graphContainer = document.getElementById('recommendationGraph');
+    const sequenceContainer = document.getElementById('logicalSequenceView');
+    const graphLegend = document.getElementById('graphLegend');
+    const sequenceLegend = document.getElementById('sequenceLegend');
+    const toggleLayoutBtn = document.getElementById('toggleLayoutBtn');
+    const resetZoomBtn = document.getElementById('resetZoomBtn');
+    
+    if (!currentRecommendation || !currentRecommendation.details || currentRecommendation.details.length === 0) {
+        console.warn('Nenhuma recomendação disponível para visualizar');
+        return; // Sem recomendação para exibir
+    }
+    
+    // Garantir que estamos usando os dados mais recentes de currentRecommendation
+    const rec = {
+        ...currentRecommendation,
+        details: [...currentRecommendation.details] // Cópia para garantir que não há referência compartilhada
+    };
+    
+    if (mode === 'tree') {
+        // Mostrar visualização em árvore
+        graphContainer.style.display = 'block';
+        sequenceContainer.style.display = 'none';
+        graphLegend.style.display = 'flex';
+        sequenceLegend.style.display = 'none';
+        toggleLayoutBtn.style.display = 'inline-block';
+        resetZoomBtn.style.display = 'inline-block';
+        
+        // SEMPRE recriar grafo com dados atualizados (destruir anterior primeiro)
+        await createRecommendationGraph(rec);
+    } else {
+        // Mostrar sequência lógica hierárquica
+        graphContainer.style.display = 'none';
+        sequenceContainer.style.display = 'block';
+        graphLegend.style.display = 'none';
+        sequenceLegend.style.display = 'flex';
+        toggleLayoutBtn.style.display = 'none';
+        resetZoomBtn.style.display = 'none';
+        
+        // SEMPRE criar visualização de sequência lógica com dados atualizados
+        await createLogicalSequenceView(rec);
+    }
+}
+
 // Alternar layout do grafo (entre árvore e sequencial)
 function toggleGraphLayout() {
     currentGraphLayout = currentGraphLayout === 'hierarchical' ? 'sequential' : 'hierarchical';
@@ -2226,6 +2334,290 @@ function toggleGraphLayout() {
     // Recriar grafo com novo layout
     if (currentRecommendation) {
         createRecommendationGraph(currentRecommendation);
+    }
+}
+
+// Criar visualização em sequência lógica hierárquica (estilo esquema de pastas)
+async function createLogicalSequenceView(rec) {
+    const container = document.getElementById('sequenceContainer');
+    if (!container) return;
+    
+    try {
+        // Limpar container antes de criar nova visualização
+        container.innerHTML = '';
+        
+        // IMPORTANTE: Usar a ordem exata da recomendação (rec.details)
+        const recommendedOrder = rec.details.map(t => t.id);
+        const testMap = new Map();
+        rec.details.forEach((test, index) => {
+            testMap.set(test.id, { ...test, index, orderIndex: index });
+        });
+        
+        // Construir árvore hierárquica respeitando a ordem recomendada
+        function buildFolderTree() {
+            const tree = {};
+            const processed = new Set();
+            
+            // Processar testes na ordem recomendada
+            recommendedOrder.forEach(testId => {
+                const test = testMap.get(testId);
+                if (!test || processed.has(testId)) return;
+                
+                const parentId = test.parent_test_id;
+                
+                if (parentId && testMap.has(parentId) && recommendedOrder.includes(parentId)) {
+                    // Tem pai na recomendação - adicionar como filho
+                    if (!tree[parentId]) {
+                        tree[parentId] = { test: testMap.get(parentId), children: [] };
+                    }
+                    if (!tree[testId]) {
+                        tree[testId] = { test: test, children: [] };
+                    }
+                    if (!tree[parentId].children.find(c => c.testId === testId)) {
+                        tree[parentId].children.push({ testId, orderIndex: test.orderIndex });
+                    }
+                } else {
+                    // Raiz - criar entrada na árvore
+                    if (!tree[testId]) {
+                        tree[testId] = { test: test, children: [] };
+                    }
+                }
+                
+                processed.add(testId);
+            });
+            
+            return tree;
+        }
+        
+        const folderTree = buildFolderTree();
+        
+        // Função para obter ação principal do teste
+        function getTestAction(test) {
+            const testName = test.name.toLowerCase();
+            const module = test.module.toLowerCase();
+            
+            // Extrair ação do nome
+            if (testName.includes('abrir') || testName.includes('open')) {
+                return testName.replace(/abrir|open/gi, '').trim();
+            } else if (testName.includes('captura') || testName.includes('foto') || testName.includes('photo')) {
+                return 'take photo';
+            } else if (testName.includes('gravação') || testName.includes('vídeo') || testName.includes('video')) {
+                return 'record video';
+            } else if (testName.includes('retrato') || testName.includes('portrait')) {
+                return 'take portrait photo';
+            } else if (testName.includes('conectar') || testName.includes('connect')) {
+                return 'connect to network';
+            } else if (testName.includes('navegar') || testName.includes('navigate')) {
+                return testName.replace(/navegar|navigate/gi, '').trim();
+            } else {
+                return testName.split(' ').slice(0, 3).join(' ');
+            }
+        }
+        
+        // Função para obter ação raiz baseada no módulo
+        function getRootAction(test) {
+            const module = test.module.toLowerCase();
+            if (module.includes('camera') || module.includes('câmera')) {
+                return 'open camera';
+            } else if (module.includes('wifi') || module.includes('connectivity')) {
+                return 'open settings';
+            } else if (module.includes('telephony') || module.includes('dialer')) {
+                return 'open dialer';
+            } else if (module.includes('bluetooth')) {
+                return 'open settings';
+            } else if (module.includes('battery')) {
+                return 'open settings';
+            } else {
+                return `open ${module}`;
+            }
+        }
+        
+        // Renderizar sequência lógica hierárquica
+        container.innerHTML = '';
+        const sequenceDiv = document.createElement('div');
+        sequenceDiv.className = 'logical-sequence-tree';
+        
+        // Construir estrutura hierárquica respeitando parent_test_id e ordem recomendada
+        const testHierarchy = new Map(); // testId -> { parentId, level, path }
+        
+        // Primeira passada: calcular níveis hierárquicos
+        function calculateLevel(testId, visited = new Set()) {
+            if (visited.has(testId)) return 0;
+            visited.add(testId);
+            
+            const test = testMap.get(testId);
+            if (!test) return 0;
+            
+            if (testHierarchy.has(testId)) {
+                return testHierarchy.get(testId).level;
+            }
+            
+            const parentId = test.parent_test_id;
+            let level = 0;
+            let path = [];
+            
+            if (parentId && testMap.has(parentId) && recommendedOrder.includes(parentId)) {
+                level = calculateLevel(parentId, visited) + 1;
+                const parentHierarchy = testHierarchy.get(parentId);
+                if (parentHierarchy) {
+                    path = [...parentHierarchy.path, parentId];
+                } else {
+                    path = [parentId];
+                }
+            }
+            
+            testHierarchy.set(testId, { parentId, level, path });
+            return level;
+        }
+        
+        // Calcular hierarquia para todos os testes na ordem recomendada
+        recommendedOrder.forEach(testId => calculateLevel(testId));
+        
+        // Segunda passada: construir caminhos compartilhados
+        const renderedPaths = new Map(); // pathKey -> { sharedActions, level, tests }
+        
+        recommendedOrder.forEach(testId => {
+            const test = testMap.get(testId);
+            if (!test) return;
+            
+            const hierarchy = testHierarchy.get(testId);
+            const parentId = hierarchy?.parentId;
+            
+            let sharedActions = [];
+            let level = hierarchy?.level || 0;
+            
+            // Construir caminho compartilhado baseado na hierarquia
+            if (parentId && testMap.has(parentId) && recommendedOrder.includes(parentId)) {
+                const parent = testMap.get(parentId);
+                const parentHierarchy = testHierarchy.get(parentId);
+                
+                // Construir caminho completo do pai
+                if (parentHierarchy && parentHierarchy.path.length > 0) {
+                    // Reconstruir ações do caminho do pai
+                    sharedActions = [];
+                    parentHierarchy.path.forEach(ancestorId => {
+                        const ancestor = testMap.get(ancestorId);
+                        if (ancestor) {
+                            if (sharedActions.length === 0) {
+                                sharedActions.push(getRootAction(ancestor));
+                            } else {
+                                sharedActions.push(getTestAction(ancestor));
+                            }
+                        }
+                    });
+                    // Adicionar ação do pai direto
+                    sharedActions.push(getTestAction(parent));
+                } else {
+                    // Pai é raiz
+                    sharedActions = [getRootAction(parent)];
+                }
+            } else {
+                // Teste raiz
+                sharedActions = [getRootAction(test)];
+                level = 0;
+            }
+            
+            const testAction = getTestAction(test);
+            const pathKey = sharedActions.join(' > ');
+            
+            if (!renderedPaths.has(pathKey)) {
+                renderedPaths.set(pathKey, {
+                    sharedActions: sharedActions,
+                    level: level,
+                    tests: []
+                });
+            }
+            
+            renderedPaths.get(pathKey).tests.push({
+                testId: test.id,
+                testName: test.name,
+                action: testAction,
+                level: level,
+                orderIndex: test.orderIndex,
+                contextPreserving: test.context_preserving || false,
+                teardownRestores: test.teardown_restores || false,
+                validationPoint: test.validation_point_action || null
+            });
+        });
+        
+        // Renderizar grupos de caminho na ordem recomendada
+        const sortedPaths = Array.from(renderedPaths.entries()).sort((a, b) => {
+            // Ordenar pela ordem do primeiro teste de cada grupo
+            const firstTestA = a[1].tests[0];
+            const firstTestB = b[1].tests[0];
+            return firstTestA.orderIndex - firstTestB.orderIndex;
+        });
+        
+        sortedPaths.forEach(([pathKey, pathData]) => {
+            const pathGroup = document.createElement('div');
+            pathGroup.className = 'sequence-path-group';
+            
+            // Renderizar ações compartilhadas (pastas) com indentação hierárquica
+            pathData.sharedActions.forEach((action, idx) => {
+                const folderDiv = document.createElement('div');
+                folderDiv.className = 'sequence-folder';
+                folderDiv.style.paddingLeft = `${idx * 20}px`;
+                folderDiv.innerHTML = `<span class="folder-icon">📁</span> <span class="folder-name">${action}</span>`;
+                pathGroup.appendChild(folderDiv);
+            });
+            
+            // Renderizar testes (arquivos) deste caminho, ordenados por ordemIndex
+            pathData.tests.sort((a, b) => a.orderIndex - b.orderIndex);
+            pathData.tests.forEach((testData, testIdx) => {
+                const testDiv = document.createElement('div');
+                testDiv.className = 'sequence-test';
+                // Indentação baseada no nível hierárquico
+                const indentLevel = pathData.sharedActions.length;
+                testDiv.style.paddingLeft = `${indentLevel * 20}px`;
+                
+                const markers = [];
+                if (testData.contextPreserving) {
+                    markers.push('<span class="marker">(*)</span>');
+                }
+                if (testData.teardownRestores) {
+                    markers.push('<span class="marker">(**)</span>');
+                }
+                if (testData.validationPoint || testData.testId) {
+                    markers.push(`<span class="test-id">[${testData.testId}]</span>`);
+                }
+                
+                testDiv.innerHTML = `<span class="file-icon">📄</span> <span class="test-name">${testData.action}</span> ${markers.join(' ')}`;
+                testDiv.dataset.testId = testData.testId;
+                testDiv.title = testData.testName;
+                
+                // Adicionar evento de clique para destacar na lista
+                testDiv.addEventListener('click', () => {
+                    highlightTestInList(testData.testId);
+                });
+                
+                pathGroup.appendChild(testDiv);
+            });
+            
+            sequenceDiv.appendChild(pathGroup);
+        });
+        
+        container.appendChild(sequenceDiv);
+        
+    } catch (error) {
+        console.error('Erro ao criar visualização de sequência lógica:', error);
+        container.innerHTML = '<div class="error">Erro ao carregar sequência lógica hierárquica.</div>';
+    }
+}
+
+// Destacar teste na lista quando clicado na sequência lógica
+function highlightTestInList(testId) {
+    const testItem = document.querySelector(`#recommendedOrder .test-item[data-test-id="${testId}"]`);
+    if (testItem) {
+        // Scroll até o item
+        testItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        
+        // Destacar temporariamente
+        testItem.style.backgroundColor = 'var(--selected-bg)';
+        testItem.style.borderColor = 'var(--primary-color)';
+        setTimeout(() => {
+            testItem.style.backgroundColor = '';
+            testItem.style.borderColor = '';
+        }, 2000);
     }
 }
 
